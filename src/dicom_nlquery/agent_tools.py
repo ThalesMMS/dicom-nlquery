@@ -1,4 +1,6 @@
 import json
+import re
+import unicodedata
 from typing import List, Dict, Any
 from .dicom_client import DicomClient
 
@@ -52,11 +54,48 @@ DICOM_TOOLS_SCHEMA = [
     }
 ]
 
+MODALITY_MAP = {
+    "RM": "MR",
+    "MRI": "MR",
+    "RESSONANCIA": "MR",
+    "RESSONANCIA MAGNETICA": "MR",
+    "RESSONANCIA MAGNÉTICA": "MR",
+    "TC": "CT",
+    "TOMOGRAFIA": "CT",
+    "USG": "US",
+    "ULTRASSOM": "US",
+}
+
+ALLOWED_MODALITIES = {"MR", "CT", "US", "CR", "DX", "SR", "PDF"}
+UID_RE = re.compile(r"^\d+(?:\.\d+)+$")
+
+
+def _normalize_text(value: str) -> str:
+    """Remove acentos para normalizar comparações de string."""
+    return "".join(c for c in unicodedata.normalize("NFKD", value) if not unicodedata.combining(c))
+
+
+def _normalize_modality(modality: str) -> str:
+    mod = _normalize_text(str(modality)).strip().upper()
+    mod = MODALITY_MAP.get(mod, mod)
+    return mod
+
+
+def _valid_uid(uid: str) -> bool:
+    return bool(UID_RE.match(uid))
+
 def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
     try:
         if name == "search_studies":
             # Limpa parâmetros vazios
             params = {k: v for k, v in args.items() if v}
+
+            # Normaliza modalidade (sinônimos comuns -> códigos DICOM)
+            if "modality" in params:
+                mod = _normalize_modality(params["modality"])
+                if mod and mod not in ALLOWED_MODALITIES:
+                    return json.dumps({"error": f"Modality inválida: {mod}. Use {sorted(ALLOWED_MODALITIES)}"})
+                params["modality"] = mod
             
             # Corrige nomes de parâmetros comuns (LLM vs Pynetdicom)
             if "modality" in params:
@@ -69,6 +108,12 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
                     params.pop("patient_sex")
                 else:
                     params["patient_sex"] = sex
+
+            # Fallback simples para “feto/fetal”: usa wildcard que cobre ambos
+            if "study_description" in params:
+                desc_norm = _normalize_text(str(params["study_description"])).lower()
+                if "feto" in desc_norm and "fet" not in desc_norm:
+                    params["study_description"] = "*fet*"
 
             try:
                 results = client.query_studies(**params)
@@ -92,9 +137,11 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
             return json.dumps(summary, indent=2)
 
         elif name == "inspect_metadata":
-            uid = args.get("study_instance_uid", "")
+            uid = str(args.get("study_instance_uid", "")).strip()
             if not uid or "<" in uid:
                 return "ERRO: UID inválido. Faça uma busca primeiro."
+            if not _valid_uid(uid):
+                return json.dumps({"error": f"study_instance_uid inválido: {uid}. Use formato 1.2.826.0.1..."})
             
             try:
                 series = client.query_series(study_instance_uid=uid)
@@ -107,11 +154,13 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
             return json.dumps(series[:15], indent=2, default=str)
 
         elif name == "move_study":
-            uid = args.get("study_instance_uid", "")
+            uid = str(args.get("study_instance_uid", "")).strip()
             dest = args.get("destination_node", "")
             
             if not uid or not dest:
                 return "ERRO: Parâmetros faltando."
+            if not _valid_uid(uid):
+                return json.dumps({"error": f"study_instance_uid inválido: {uid}. Use formato 1.2.826.0.1..."})
 
             try:
                 res = client.move_study(destination_node=dest, study_instance_uid=uid)

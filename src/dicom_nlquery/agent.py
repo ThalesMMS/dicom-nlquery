@@ -21,6 +21,11 @@ REGRAS CRÍTICAS DE OPERAÇÃO:
    - RX/Raio-X -> 'CR' ou 'DX'
    - US/Ultrassom -> 'US'
    - "Qualquer exame" -> Não preencha o campo modality.
+5. **UMA FERRAMENTA POR VEZ**: Em cada turno faça no máximo 1 tool_call. Não chame `inspect_metadata` ou `move_study` junto com `search_studies`; espere o resultado anterior.
+6. **UID REAL**: Nunca use placeholders (<...>) ou UIDs inventados. `study_instance_uid` deve vir literalmente de um resultado anterior (apenas dígitos e pontos).
+7. **SEXO**: Não inferir sexo por gênero gramatical ("um/uma"). Só use `patient_sex` se o usuário declarar explicitamente.
+8. **RESSONÂNCIA**: Se o usuário disser RM/ressonância/MRI, mantenha `modality=MR`. Não troque para US ou outra modalidade.
+9. **FETO**: Ao buscar feto/gestante, prefira `study_description="*fet*"` para cobrir “feto/fetal”.
 
 FLUXO: Search -> (Se vazio: Search Broader) -> (Se achou: Inspect) -> (Se confirmado: Move).
 """
@@ -60,9 +65,30 @@ class DicomAgent:
             pass
         return None
 
+    def _search_signature(self, result_str: str) -> str:
+        if not result_str:
+            return "EMPTY"
+        try:
+            data = json.loads(result_str)
+        except json.JSONDecodeError:
+            return result_str.strip()
+        if not isinstance(data, list):
+            return result_str.strip()
+        uids = []
+        for item in data:
+            if isinstance(item, dict):
+                uid = item.get("UID")
+                if uid:
+                    uids.append(str(uid).strip())
+        if not uids:
+            return "EMPTY"
+        return "|".join(sorted(uids))
+
     def run(self, user_query: str):
         self.history.append({"role": "user", "content": user_query})
-        
+        search_signature = "NO_SEARCH"
+        moved_uids_for_search: set[str] = set()
+
         for step in range(self.max_steps):
             log.info(f"--- Passo {step+1} ---")
             
@@ -83,8 +109,11 @@ class DicomAgent:
             if not tool_calls:
                 return content
 
-            # 3. Chain Breaking: Executa APENAS a primeira ferramenta sugerida
-            tool = tool_calls[0]
+            # 3. Executa apenas a primeira ferramenta sugerida; evita sequências sem feedback do resultado
+            tools_to_run = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+            if len(tools_to_run) > 1:
+                log.warning(f"⚠️  LLM retornou {len(tools_to_run)} tool_calls; executando apenas a primeira.")
+            tool = tools_to_run[0]
             fname = tool["function"]["name"]
             fargs = tool["function"]["arguments"]
             
@@ -96,8 +125,30 @@ class DicomAgent:
                     pass
             
             log.info(f"🔧 Agente chamando: {fname}({fargs})")
-            
+
             # 4. Execução
+            if fname == "move_study":
+                uid = str(fargs.get("study_instance_uid", "")).strip()
+                dest = str(fargs.get("destination_node", "")).strip()
+                if uid and dest:
+                    if uid in moved_uids_for_search:
+                        result_str = (
+                            "SKIP: UID ja movido para os resultados atuais. "
+                            "Execute nova busca para tentar novamente."
+                        )
+                        log.info(f"↩️  Ignorando C-MOVE repetido para UID {uid}.")
+                        self.history.append({
+                            "role": "tool",
+                            "content": result_str,
+                            "name": fname
+                        })
+                        self.history.append({
+                            "role": "user",
+                            "content": "SISTEMA: Nao repita move_study sem nova busca."
+                        })
+                        continue
+                    moved_uids_for_search.add(uid)
+
             result = execute_tool(fname, fargs, self.client)
             result_str = str(result)
             
@@ -111,7 +162,13 @@ class DicomAgent:
                 "content": result_str,
                 "name": fname
             })
-            
+
+            if fname == "search_studies":
+                new_signature = self._search_signature(result_str)
+                if new_signature != search_signature:
+                    search_signature = new_signature
+                    moved_uids_for_search = set()
+
             # 6. Dica automática se a busca falhar (Evita loop de desculpas)
             if fname == "search_studies" and ("[]" in result_str or "Nenhum resultado" in result_str):
                 log.info("💡 Injetando dica para ampliar busca...")
@@ -119,8 +176,5 @@ class DicomAgent:
                     "role": "user", 
                     "content": "SISTEMA: A busca retornou vazia. Tente novamente removendo filtros restritivos (como descrição, sexo ou data)."
                 })
-
-            if len(tool_calls) > 1:
-                log.info(f"⚠️  Ignorando {len(tool_calls)-1} chamadas subsequentes para manter foco.")
 
         return "Limite de passos atingido."
