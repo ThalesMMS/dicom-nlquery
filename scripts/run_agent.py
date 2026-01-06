@@ -3,7 +3,7 @@ import argparse
 import logging
 import sys
 from dicom_nlquery.config import load_config
-from dicom_mcp.dicom_client import DicomClient # Uso direto in-process
+from dicom_nlquery.dicom_client import DicomClient  # Local client with query_studies
 from dicom_nlquery.agent import DicomAgent
 from dicom_nlquery.llm_client import OllamaClient
 

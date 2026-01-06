@@ -33,7 +33,7 @@ Sua tarefa e extrair criterios de busca do texto fornecido e retornar APENAS um 
     "series_number": "string" | null,
     "series_description": "texto livre" | null,
     "series_instance_uid": "string" | null
-  }
+  } | null
 }
 
 Regras:
@@ -42,9 +42,11 @@ Regras:
 3. Para sexo: "mulher/feminino" = "F", "homem/masculino" = "M", "outro" = "O"
 4. Datas devem estar no formato DICOM YYYYMMDD ou intervalo YYYYMMDD-YYYYMMDD
 5. Para modalidades, use codigos DICOM (ex: MR, CT, US, CR). Use barra invertida para multiplas modalidades
-6. Para texto livre (ex: cranio, abdome), use study_description ou series_description conforme o contexto
-7. Voce pode usar wildcard "*" nos campos de descricao se fizer sentido
-8. Se a consulta mencionar idade/faixa etaria, converta para patient_birth_date usando a data atual
+6. Para texto livre de exame/parte do corpo (ex: cranio, abdome), prefira study_description
+7. Use campos de series SOMENTE se a consulta pedir explicitamente algo de serie (ex: numero de serie, sequencia, fase, serie X). Caso contrario, use series=null
+8. Voce pode usar wildcard "*" nos campos de descricao se fizer sentido
+9. Se a consulta mencionar idade/faixa etaria, converta para patient_birth_date usando a data atual
+10. Nao invente modalidades: use apenas as que forem citadas no texto
 """
 
 

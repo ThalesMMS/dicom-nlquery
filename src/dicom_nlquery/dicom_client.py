@@ -6,7 +6,10 @@ import logging
 
 from pydicom.dataset import Dataset
 from pynetdicom import AE
-from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind
+from pynetdicom.sop_class import (
+    StudyRootQueryRetrieveInformationModelFind,
+    StudyRootQueryRetrieveInformationModelMove,
+)
 
 from .logging_config import mask_phi
 
@@ -18,6 +21,7 @@ class DicomClient:
         self.called_aet = called_aet
         self.ae = AE(ae_title=calling_aet)
         self.ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
+        self.ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
         log = logging.getLogger(__name__)
         log.debug(
             "DicomClient initialized",
@@ -145,4 +149,41 @@ class DicomClient:
                             result[elem.keyword] = elem.value
                     except Exception:
                         result[elem.keyword] = str(elem.value)
+        return result
+
+    def move_study(self, destination_node: str, study_instance_uid: str) -> dict:
+        """Move a DICOM study to another node using C-MOVE."""
+        log = logging.getLogger(__name__)
+        ds = Dataset()
+        ds.QueryRetrieveLevel = "STUDY"
+        ds.StudyInstanceUID = study_instance_uid
+
+        assoc = self.ae.associate(self.host, self.port, ae_title=self.called_aet)
+        if not assoc.is_established:
+            log.error("C-MOVE association failed")
+            return {"success": False, "message": "Failed to associate"}
+
+        result = {"success": False, "message": "C-MOVE failed", "completed": 0, "failed": 0}
+        try:
+            responses = assoc.send_c_move(
+                ds, destination_node, StudyRootQueryRetrieveInformationModelMove
+            )
+            for status, _ in responses:
+                if status:
+                    if hasattr(status, "NumberOfCompletedSuboperations"):
+                        result["completed"] = status.NumberOfCompletedSuboperations
+                    if hasattr(status, "NumberOfFailedSuboperations"):
+                        result["failed"] = status.NumberOfFailedSuboperations
+                    if status.Status == 0x0000:
+                        result["success"] = True
+                        result["message"] = "C-MOVE completed successfully"
+                    elif status.Status in (0x0001, 0xB000):
+                        result["success"] = True
+                        result["message"] = "C-MOVE completed with warnings"
+                    elif status.Status == 0xA801:
+                        result["message"] = f"Destination '{destination_node}' unknown"
+                    else:
+                        result["message"] = f"C-MOVE status 0x{status.Status:04X}"
+        finally:
+            assoc.release()
         return result

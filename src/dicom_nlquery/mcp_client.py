@@ -77,14 +77,20 @@ class McpSession:
 
 def _extract_tool_payload(result) -> Any:
     if result.structuredContent is not None:
-        return result.structuredContent
+        payload = result.structuredContent
+        if isinstance(payload, dict) and set(payload.keys()) == {"result"}:
+            return payload["result"]
+        return payload
     for block in result.content:
         if getattr(block, "type", None) == "text":
             text = block.text.strip()
             if not text:
                 continue
             try:
-                return json.loads(text)
+                payload = json.loads(text)
+                if isinstance(payload, dict) and set(payload.keys()) == {"result"}:
+                    return payload["result"]
+                return payload
             except json.JSONDecodeError:
                 return text
     return None
