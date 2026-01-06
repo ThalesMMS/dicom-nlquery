@@ -2,43 +2,66 @@
 
 Natural language DICOM search (PT-BR) with a deterministic filtering pipeline.
 
-## Overview
+This repo also contains `dicom-mcp`. You can run them side-by-side against the
+same Orthanc/PACS. `dicom-nlquery` does not depend on the `dicom-mcp` server,
+but if `dicom-mcp` is installed in the same venv it will reuse its DICOM client.
 
-`dicom-nlquery` converts a natural language query into structured DICOM criteria
-and runs C-FIND against a PACS (or Orthanc) to return matching AccessionNumbers.
-It keeps the LLM local (Ollama) and applies guardrails for performance and
-privacy.
+## Prerequisites
 
-## Installation
+- Python 3.12+
+- uv
+- Ollama running locally (for parsing)
+- Docker (only for integration tests / Orthanc demo)
+
+## One-time setup (single venv for both)
 
 ```bash
 cd dicom-nlquery
-
-# Create venv (optional but recommended)
 uv venv
 source .venv/bin/activate
 
-# Install dependencies
+# dicom-nlquery
 uv pip install -e ".[dev]"
+
+# optional: dicom-mcp (shared DICOM client + server tools)
+uv pip install -e ../dicom-mcp
 ```
 
-## Quick Start
+## Run with Orthanc (local demo)
 
 ```bash
-# Verify Ollama
-curl -s http://127.0.0.1:11434/api/tags
+# start Orthanc
+cd dicom-nlquery
+docker compose -f tests/docker-compose.yml up -d
 
-# Dry run (no PACS query)
+# dry-run (no PACS query)
 dicom-nlquery dry-run "mulheres de 20 a 40 anos com cranio"
 
-# Execute against a DICOM node
+# execute (C-FIND)
 dicom-nlquery execute --date-range 20190101-20210101 \
   "mulheres de 20 a 40 anos com cranio"
 ```
 
+## Run alongside dicom-mcp (optional)
+
+Open a second terminal in the same venv and start the dicom-mcp server:
+
+```bash
+cd dicom-mcp
+
+dicom-mcp tests/test_dicom_servers.yaml --transport stdio
+```
+
+Notes:
+- `dicom-nlquery` does not call the `dicom-mcp` server; it talks directly to the
+  DICOM node. Running both is useful when you want MCP tools and NL queries
+  against the same Orthanc/PACS.
+- Ensure your PACS/Orthanc allows the calling AET (`calling_aet` in config).
+  The included Orthanc test compose already allows `NLQUERY` and `TESTSCU`.
+
 ## Configuration
 
-Create `config.yaml` (or use `config-test.yaml` for Orthanc):
+Use `config.yaml` for real PACS or `config-test.yaml` for Orthanc. Example:
 
 ```yaml
 nodes:
@@ -72,20 +95,16 @@ matching:
 ## Usage
 
 ```bash
-# Dry run
-
+# dry-run
 dicom-nlquery dry-run "mulheres de 30 anos com cranio"
 
-# Execute with JSON output
-
+# execute with JSON output
 dicom-nlquery execute --json "exames de cranio"
 
-# Execute with custom date range
-
+# custom date range
 dicom-nlquery execute --date-range 20240101-20241231 "exames de 2024"
 
-# Override node
-
+# override node
 dicom-nlquery execute --node orthanc "todos os exames"
 ```
 
@@ -106,37 +125,35 @@ dicom-nlquery execute --node orthanc "todos os exames"
 ## Testing
 
 ```bash
-# Unit tests
+# unit tests
 cd dicom-nlquery
 pytest tests/unit/ -v
 
-# Integration tests (Orthanc Docker)
+# integration tests (Orthanc)
 docker compose -f tests/docker-compose.yml up -d
 pytest tests/integration/ -v -m integration
 docker compose -f tests/docker-compose.yml down
 
-# Full suite
+# full suite
 pytest tests/ -v
 ```
 
 ## Troubleshooting
 
-- "LLM nao disponivel": Ensure Ollama is running (`ollama serve`) and
+- "LLM nao disponivel": ensure Ollama is running (`ollama serve`) and
   `llama3.2:latest` is installed.
-- "Falha na associacao DICOM": Check AE titles, host/port, firewall, and
+- "Falha na associacao DICOM": check AE titles, host/port, firewall, and
   Orthanc `DicomModalities` entries.
-- "Nenhum resultado": Expand date range with `--date-range` and validate
-  criteria with `dry-run`.
+- "Nenhum resultado": expand the date range and validate criteria with
+  `dry-run`.
 
 ## API Reference
 
-Minimal programmatic usage:
-
 ```python
 from dicom_nlquery.config import load_config
+from dicom_nlquery.dicom_client import DicomClient
 from dicom_nlquery.dicom_search import execute_search
 from dicom_nlquery.nl_parser import parse_nl_to_criteria
-from dicom_nlquery.dicom_client import DicomClient
 
 config = load_config("config.yaml")
 criteria = parse_nl_to_criteria("mulheres de 20 a 40 anos", config.llm)
