@@ -1,0 +1,26 @@
+nodes:
+  orthanc:
+    host: "localhost"
+    port: 4242
+    ae_title: "ORTHANC"
+    description: "Orthanc Docker para testes"
+
+current_node: "orthanc"
+calling_aet: "TESTSCU"
+
+llm:
+  provider: "ollama"
+  base_url: "http://127.0.0.1:11434"
+  model: "llama3.2:latest"
+  temperature: 0
+  timeout: 30
+
+guardrails:
+  study_date_range_default_days: 365
+  max_studies_scanned_default: 100
+
+matching:
+  head_keywords: ["cranio", "cabeca", "head", "brain"]
+  synonyms:
+    axial: ["axial", "ax"]
+    pos: ["pos", "post"]

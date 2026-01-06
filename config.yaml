@@ -1,0 +1,41 @@
+nodes:
+  radiant:
+    host: "172.16.3.38"
+    port: 11112
+    ae_title: "RADIANT"
+    description: "PACS de producao"
+  orthanc:
+    host: "localhost"
+    port: 4242
+    ae_title: "ORTHANC"
+    description: "Orthanc local para testes"
+
+current_node: "radiant"
+calling_aet: "NLQUERY"
+
+llm:
+  provider: "ollama"
+  base_url: "http://127.0.0.1:11434"
+  model: "llama3.2:latest"
+  temperature: 0
+  timeout: 60
+
+guardrails:
+  study_date_range_default_days: 180
+  max_studies_scanned_default: 2000
+
+matching:
+  head_keywords:
+    - "cranio"
+    - "cabeca"
+    - "head"
+    - "brain"
+    - "cerebro"
+    - "encefalico"
+  synonyms:
+    axial: ["axial", "ax", "tra", "transversal"]
+    pos: ["pos", "p\u00f3s", "post", "c+", "gd", "gadolinio"]
+    pre: ["pre", "pr\u00e9", "sem contraste", "s/c"]
+    mt: ["mt", "magnetization transfer"]
+    sagital: ["sag", "sagital", "sagittal"]
+    coronal: ["cor", "coronal"]
