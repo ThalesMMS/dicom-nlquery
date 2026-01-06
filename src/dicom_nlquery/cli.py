@@ -66,14 +66,27 @@ def _validate_date_range(date_range: str | None) -> str | None:
 )
 @click.option("--node", "-n", "node", default=None, help="Node do dicom-mcp para consulta")
 @click.option("--verbose", "-v", is_flag=True, help="Ativa logs verbosos")
+@click.option(
+    "--llm-debug",
+    is_flag=True,
+    help="Mostra o JSON extraido da LLM e os criterios finais (pode conter PHI).",
+)
 @click.option("--json", "-j", "json_output", is_flag=True, help="Saida JSON")
 @click.pass_context
-def main(ctx: click.Context, config_path: Path, node: str | None, verbose: bool, json_output: bool) -> None:
+def main(
+    ctx: click.Context,
+    config_path: Path,
+    node: str | None,
+    verbose: bool,
+    llm_debug: bool,
+    json_output: bool,
+) -> None:
     """CLI for dicom-nlquery."""
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = str(config_path)
     ctx.obj["node"] = node
     ctx.obj["verbose"] = verbose
+    ctx.obj["llm_debug"] = llm_debug
     ctx.obj["json_output"] = json_output
 
 
@@ -90,10 +103,17 @@ def main(ctx: click.Context, config_path: Path, node: str | None, verbose: bool,
 @click.pass_context
 def dry_run(ctx: click.Context, config_path_override: Path | None, query: str) -> None:
     """Parse query and show criteria without executing DICOM search."""
+    if ctx.obj["llm_debug"] or ctx.obj["verbose"]:
+        _configure_logging(ctx.obj["verbose"])
     config_path = str(config_path_override) if config_path_override else ctx.obj["config_path"]
     config = _load_config(config_path)
 
-    criteria = parse_nl_to_criteria(query, config.llm, strict_evidence=True)
+    criteria = parse_nl_to_criteria(
+        query,
+        config.llm,
+        strict_evidence=True,
+        debug=ctx.obj["llm_debug"],
+    )
     date_range, _ = apply_guardrails(config.guardrails)
     search_plan = _build_search_plan(criteria, date_range)
 
@@ -159,7 +179,12 @@ def execute(
         ctx.exit(3)
 
     try:
-        criteria = parse_nl_to_criteria(query, config.llm, strict_evidence=True)
+        criteria = parse_nl_to_criteria(
+            query,
+            config.llm,
+            strict_evidence=True,
+            debug=ctx.obj["llm_debug"],
+        )
     except Exception as exc:
         click.echo(f"Erro: {exc}", err=True)
         ctx.exit(3)

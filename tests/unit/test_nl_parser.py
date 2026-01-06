@@ -61,3 +61,23 @@ def test_parser_strict_adds_modality_when_missing() -> None:
     criteria = parse_nl_to_criteria("RM de cranio", FakeLLM(), strict_evidence=True)
 
     assert criteria.study.modality_in_study == "MR"
+
+
+def test_parser_strict_keeps_patient_name() -> None:
+    class FakeLLM:
+        def chat(self, system_prompt: str, user_prompt: str) -> str:
+            return '{\"study\": {\"patient_name\": \"PACIENTE TESTE\"}, \"series\": null}'
+
+    criteria = parse_nl_to_criteria("exames de paciente teste", FakeLLM(), strict_evidence=True)
+
+    assert criteria.study.patient_name == "PACIENTE TESTE"
+
+
+def test_parser_strict_extracts_patient_name_from_query() -> None:
+    class FakeLLM:
+        def chat(self, system_prompt: str, user_prompt: str) -> str:
+            return '{\"study\": {}, \"series\": null}'
+
+    criteria = parse_nl_to_criteria("exames de elaine", FakeLLM(), strict_evidence=True)
+
+    assert criteria.study.patient_name == "ELAINE"

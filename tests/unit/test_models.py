@@ -17,6 +17,12 @@ def test_search_criteria_accepts_patient_filter() -> None:
     assert criteria.study.patient_sex == "F"
 
 
+def test_search_criteria_accepts_patient_name() -> None:
+    criteria = SearchCriteria(study=StudyQuery(patient_name="PACIENTE TESTE"))
+
+    assert criteria.study.patient_name == "PACIENTE TESTE"
+
+
 def test_study_query_validates_sex() -> None:
     with pytest.raises(ValidationError):
         StudyQuery(patient_sex="X")

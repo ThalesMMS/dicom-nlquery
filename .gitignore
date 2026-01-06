@@ -9,3 +9,4 @@ build/
 htmlcov/
 .DS_Store
 dicom-nlquery.log
+dicom-mcp.log

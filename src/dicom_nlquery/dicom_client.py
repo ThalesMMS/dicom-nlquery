@@ -80,6 +80,8 @@ class DicomClient:
 
         if kwargs.get("patient_id"):
             ds.PatientID = kwargs["patient_id"]
+        if kwargs.get("patient_name"):
+            ds.PatientName = _wildcard_contains(kwargs["patient_name"])
         if kwargs.get("patient_sex"):
             ds.PatientSex = kwargs["patient_sex"]
         if kwargs.get("patient_birth_date"):
@@ -101,6 +103,7 @@ class DicomClient:
             "StudyDescription",
             "AccessionNumber",
             "ModalitiesInStudy",
+            "PatientName",
         ]
         extra = list(kwargs.get("additional_attrs") or [])
         self._apply_return_keys(ds, attrs + extra)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import logging
+import re
 import time
 
 import anyio
@@ -29,10 +30,16 @@ def _contains_casefold(haystack: object | None, needle: str) -> bool:
         return False
     hay = str(haystack).casefold()
     ned = needle.casefold()
-    stripped = ned.replace("*", "").replace("?", "").strip()
-    if not stripped:
+    tokens = [token for token in re.split(r"[\s*?\^]+", ned) if token]
+    if not tokens:
         return True
-    return stripped in hay
+    pos = 0
+    for token in tokens:
+        idx = hay.find(token, pos)
+        if idx == -1:
+            return False
+        pos = idx + len(token)
+    return True
 
 
 def _date_matches(candidate: str | None, filter_value: str) -> bool:
@@ -63,6 +70,11 @@ def _study_matches_criteria(
 
     if filters.patient_id:
         if _normalize_str(_get_attr(study, "PatientID")) != filters.patient_id:
+            return False
+
+    if filters.patient_name:
+        candidate_name = _get_attr(study, "PatientName")
+        if candidate_name is not None and not _contains_casefold(candidate_name, filters.patient_name):
             return False
 
     if filters.patient_sex:
@@ -404,6 +416,10 @@ def _build_study_args(criteria: SearchCriteria, study_date: str | None) -> dict[
     args = criteria.study.model_dump(exclude_none=True)
     if study_date:
         args["study_date"] = study_date
+    if "patient_name" in args:
+        name = str(args["patient_name"]).strip()
+        if name and "*" not in name and "?" not in name:
+            args["patient_name"] = f"*{name.replace(' ', '*')}*"
     if "study_description" in args:
         desc = str(args["study_description"]).strip()
         if desc and "*" not in desc and "?" not in desc:

@@ -22,6 +22,7 @@ Sua tarefa e extrair criterios de busca do texto fornecido e retornar APENAS um 
 {
   "study": {
     "patient_id": "string" | null,
+    "patient_name": "string" | null,
     "patient_sex": "F" | "M" | "O" | null,
     "patient_birth_date": "YYYYMMDD" | "YYYYMMDD-YYYYMMDD" | null,
     "study_date": "YYYYMMDD" | "YYYYMMDD-YYYYMMDD" | null,
@@ -49,8 +50,8 @@ Regras:
 8. Voce pode usar wildcard "*" nos campos de descricao se fizer sentido
 9. Se a consulta mencionar idade/faixa etaria, converta para patient_birth_date usando a data atual
 10. Nao invente modalidades: use apenas as que forem citadas no texto
-11. Nao inferir filtros. Se o usuario nao declarou explicitamente sexo, data, modalidade, descricao ou IDs, retorne null.
-12. Nunca use a data de hoje como StudyDate.
+11. Nao inferir filtros. Se o usuario nao declarou explicitamente sexo, data, modalidade, descricao, IDs ou nome, retorne null.
+12. Nunca use a data de hoje como StudyDate padrão.
 """
 
 SEX_EVIDENCE = {
@@ -88,6 +89,25 @@ DATE_TOKEN_RE = re.compile(r"\b\d{8}\b|\b\d{4}[-/]\d{2}[-/]\d{2}\b|\b\d{8}-\d{8}
 AGE_RANGE_RE = re.compile(r"\b\d{1,3}\s*a\s*\d{1,3}\s*anos?\b")
 AGE_RE = re.compile(r"\b\d{1,3}\s*anos?\b")
 DESTINATION_RE = re.compile(r"\bpara\s+([a-z0-9_-]+)\b")
+NAME_START_RE = re.compile(r"\b(?:exames?|estudos?)\s+de\s+(.+)$")
+PATIENT_START_RE = re.compile(r"\b(?:paciente|pacientes)\s+(?:de\s+)?(.+)$")
+NAME_CLAUSE_BREAK_RE = re.compile(
+    r"\b(para|com|sem|no|na|nos|nas|sexo|feminino|masculino|gestante|idade|anos?|ano|meses?|mes|dia|dias"
+    r"|rm|mri|tc|ct|tomografia|ressonancia|ultrassom|usg|raio|rx)\b"
+)
+NAME_BLOCKLIST = {
+    "paciente",
+    "pacientes",
+    "sexo",
+    "feminino",
+    "masculino",
+    "gestante",
+    "exame",
+    "exames",
+    "estudo",
+    "estudos",
+}
+NAME_PREPOSITIONS = {"de", "da", "do", "dos", "das"}
 
 
 def _normalize_text(text: str) -> str:
@@ -103,6 +123,12 @@ def _normalize_token(token: str) -> str:
 def _has_id_evidence(value: str, query_norm: str) -> bool:
     value_norm = _normalize_text(value)
     return bool(value_norm) and value_norm in query_norm
+
+
+def _has_name_evidence(value: str, query_norm: str) -> bool:
+    value_norm = _normalize_text(value).replace("^", " ")
+    tokens = [token for token in value_norm.split() if len(token) >= 3]
+    return any(token in query_norm for token in tokens)
 
 
 def _has_sex_evidence(value: str, query_norm: str) -> bool:
@@ -166,6 +192,28 @@ def _extract_modalities_from_query(query_norm: str) -> list[str]:
     return matched
 
 
+def _extract_patient_name(query: str) -> str | None:
+    query_norm = _normalize_text(query)
+    match = NAME_START_RE.search(query_norm) or PATIENT_START_RE.search(query_norm)
+    if not match:
+        return None
+    tail = match.group(1).strip()
+    if not tail:
+        return None
+    tail = NAME_CLAUSE_BREAK_RE.split(tail, maxsplit=1)[0].strip()
+    if not tail:
+        return None
+    tokens = [token for token in tail.split() if token]
+    if not tokens:
+        return None
+    if all(token in NAME_BLOCKLIST or token in NAME_PREPOSITIONS for token in tokens):
+        return None
+    tokens = [token for token in tokens if token not in NAME_BLOCKLIST]
+    if not tokens:
+        return None
+    return " ".join(tokens).upper()
+
+
 def _filter_modalities_by_query(value: str, query_norm: str) -> str | None:
     normalized = _normalize_modality_value(value)
     if not normalized:
@@ -209,9 +257,14 @@ def _strip_modality_tokens(description: str, modalities: list[str]) -> str | Non
     return " ".join(filtered)
 
 
-def apply_evidence_guardrails(criteria: SearchCriteria, query: str) -> SearchCriteria:
+def apply_evidence_guardrails(
+    criteria: SearchCriteria | dict[str, object], query: str
+) -> SearchCriteria:
     query_norm = _normalize_text(query)
-    data = criteria.model_dump()
+    if isinstance(criteria, SearchCriteria):
+        data = criteria.model_dump()
+    else:
+        data = dict(criteria)
     study = dict(data.get("study") or {})
 
     if study.get("patient_id") and not _has_id_evidence(study["patient_id"], query_norm):
@@ -224,6 +277,10 @@ def apply_evidence_guardrails(criteria: SearchCriteria, query: str) -> SearchCri
         study["study_instance_uid"], query_norm
     ):
         study["study_instance_uid"] = None
+    if study.get("patient_name") and not _has_name_evidence(
+        study["patient_name"], query_norm
+    ):
+        study["patient_name"] = None
     if study.get("patient_sex") and not _has_sex_evidence(
         study["patient_sex"], query_norm
     ):
@@ -251,6 +308,14 @@ def apply_evidence_guardrails(criteria: SearchCriteria, query: str) -> SearchCri
             study["study_description"],
             modalities,
         )
+    if study.get("patient_name"):
+        match = DESTINATION_RE.search(query_norm)
+        if match and _normalize_text(study["patient_name"]) == match.group(1):
+            study["patient_name"] = None
+    if not study.get("patient_name"):
+        extracted_name = _extract_patient_name(query)
+        if extracted_name:
+            study["patient_name"] = extracted_name
     if study.get("study_description"):
         match = DESTINATION_RE.search(query_norm)
         if match and _normalize_text(study["study_description"]) == match.group(1):
@@ -260,6 +325,7 @@ def apply_evidence_guardrails(criteria: SearchCriteria, query: str) -> SearchCri
         study.get(field)
         for field in (
             "patient_id",
+            "patient_name",
             "patient_sex",
             "patient_birth_date",
             "study_date",
@@ -334,6 +400,7 @@ def parse_nl_to_criteria(
     query: str,
     llm: LLMConfig | object,
     strict_evidence: bool = False,
+    debug: bool = False,
 ) -> SearchCriteria:
     log.debug("Parsing NL query", extra={"extra_data": {"query_length": len(query)}})
     if hasattr(llm, "chat"):
@@ -349,17 +416,25 @@ def parse_nl_to_criteria(
         system_prompt = f"{SYSTEM_PROMPT}\nHoje: {date.today():%Y-%m-%d}"
     raw = client.chat(system_prompt, query)
     data = extract_json(raw)
-    try:
-        criteria = SearchCriteria.model_validate(data)
-    except ValidationError:
-        raise
+    if debug:
+        log.info("LLM JSON extracted", extra={"extra_data": {"llm_json": data}})
     if strict_evidence:
-        criteria = apply_evidence_guardrails(criteria, query)
+        criteria = apply_evidence_guardrails(data, query)
+    else:
+        try:
+            criteria = SearchCriteria.model_validate(data)
+        except ValidationError:
+            raise
     if criteria.study.study_date:
         if _query_mentions_date(query_norm):
             criteria.study.study_date = _normalize_study_date(criteria.study.study_date)
         else:
             criteria.study.study_date = None
+    if debug:
+        log.info(
+            "NL criteria resolved",
+            extra={"extra_data": {"criteria": criteria.model_dump()}},
+        )
 
     log.debug(
         "NL criteria parsed",

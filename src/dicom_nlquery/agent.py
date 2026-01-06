@@ -34,6 +34,7 @@ MAX_BROADEN_ATTEMPTS = 2
 RELAXATION_ORDER = [
     "study_description",
     "modality_in_study",
+    "patient_name",
     "patient_sex",
     "patient_birth_date",
     "accession_number",
@@ -136,6 +137,11 @@ def _has_evidence_for_filter(field: str, value: str, query: str) -> bool:
 
     if field == "study_description":
         stripped = value_norm.replace("*", " ")
+        tokens = [token for token in stripped.split() if len(token) >= 3]
+        return any(token in query_norm for token in tokens)
+
+    if field == "patient_name":
+        stripped = value_norm.replace("^", " ").replace("*", " ")
         tokens = [token for token in stripped.split() if len(token) >= 3]
         return any(token in query_norm for token in tokens)
 

@@ -70,6 +70,7 @@ class StudyQuery(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     patient_id: str | None = None
+    patient_name: str | None = None
     patient_sex: str | None = None
     patient_birth_date: str | None = None
     study_date: str | None = None
@@ -80,6 +81,7 @@ class StudyQuery(BaseModel):
 
     @field_validator(
         "patient_id",
+        "patient_name",
         "patient_sex",
         "patient_birth_date",
         "study_date",
@@ -143,6 +145,7 @@ class SearchCriteria(BaseModel):
         study_filters = any(
             [
                 self.study.patient_id,
+                self.study.patient_name,
                 self.study.patient_sex,
                 self.study.patient_birth_date,
                 self.study.study_date,
@@ -242,6 +245,7 @@ class QueryStudiesArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     patient_id: str | None = None
+    patient_name: str | None = None
     patient_sex: str | None = None
     patient_birth_date: str | None = None
     study_date: str | None = None
@@ -255,6 +259,7 @@ class QueryStudiesArgs(BaseModel):
 
     @field_validator(
         "patient_id",
+        "patient_name",
         "patient_sex",
         "patient_birth_date",
         "study_date",

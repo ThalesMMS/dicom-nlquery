@@ -109,3 +109,29 @@ def test_execute_search_accepts_wildcard_description() -> None:
     result = execute_search(criteria, query_client=client)
 
     assert result.accession_numbers == ["ACC001"]
+
+
+def test_execute_search_applies_patient_name_wildcard() -> None:
+    client = FakeDicomClient([], {})
+    criteria = SearchCriteria(study=StudyQuery(patient_name="Paciente Teste"))
+
+    execute_search(criteria, query_client=client)
+
+    assert client.study_calls
+    assert client.study_calls[0]["patient_name"] == "*Paciente*Teste*"
+
+
+def test_execute_search_filters_by_patient_name() -> None:
+    studies = [
+        {
+            "StudyInstanceUID": "1",
+            "AccessionNumber": "ACC001",
+            "PatientName": "PACIENTE^TESTE",
+        }
+    ]
+    client = FakeDicomClient(studies, {})
+    criteria = SearchCriteria(study=StudyQuery(patient_name="Paciente Teste"))
+
+    result = execute_search(criteria, query_client=client)
+
+    assert result.accession_numbers == ["ACC001"]
