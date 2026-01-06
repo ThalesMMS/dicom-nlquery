@@ -49,7 +49,9 @@ class DicomAgent:
             # 3. O Python executa cegamente
             for tool in tool_calls:
                 fname = tool["function"]["name"]
-                fargs = json.loads(tool["function"]["arguments"])
+                fargs = tool["function"]["arguments"]
+                if isinstance(fargs, str):
+                    fargs = json.loads(fargs)
                 
                 log.info(f"🔧 Agente chamando: {fname}({fargs})")
                 

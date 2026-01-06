@@ -57,36 +57,50 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
     """Executa a ação cega no DICOM Client e retorna JSON cru."""
     try:
         if name == "search_studies":
+            # Filtra argumentos vazios para não mandar wildcards desnecessários
+            query_args = {
+                k: v for k, v in {
+                    "patient_id": args.get("patient_id"),
+                    "study_date": args.get("study_date"),
+                    "modality": args.get("modality"),
+                    "patient_sex": args.get("patient_sex"),
+                    "study_description": args.get("study_description"),
+                }.items() if v  # Remove strings vazias e None
+            }
             results = client.query_study(
-                patient_id=args.get("patient_id"),
-                study_date=args.get("study_date"),
-                modality=args.get("modality"),
-                patient_sex=args.get("patient_sex"),
-                study_description=args.get("study_description"),
-                # Trazemos campos extras para a LLM decidir se vale a pena inspecionar
+                **query_args,
                 additional_attrs=["StudyDescription", "PatientBirthDate", "ModalitiesInStudy"]
             )
             # Limita resultados para não estourar contexto da LLM
-            summary = results[:20] 
+            summary = results[:20]
+            if not summary:
+                return json.dumps({"error": "Nenhum estudo encontrado. Tente filtros diferentes."})
             return json.dumps(summary, default=str)
 
         elif name == "inspect_metadata":
-            # Aqui a LLM vai ler "FLAIR", "T2", "DWI" no retorno
+            uid = args.get("study_instance_uid", "").strip()
+            if not uid:
+                return json.dumps({"error": "study_instance_uid é obrigatório. Use um UID válido da busca anterior."})
             results = client.query_series(
-                study_instance_uid=args["study_instance_uid"],
+                study_instance_uid=uid,
                 additional_attrs=["SeriesDescription", "Modality", "BodyPartExamined"]
             )
             return json.dumps(results, default=str)
 
         elif name == "move_study":
-            # A LLM deve passar o AE Title correto, ou resolvemos aqui via config se necessário
+            uid = args.get("study_instance_uid", "").strip()
+            dest = args.get("destination_node", "").strip()
+            if not uid:
+                return json.dumps({"error": "study_instance_uid é obrigatório. Inspecione os estudos primeiro."})
+            if not dest:
+                return json.dumps({"error": "destination_node é obrigatório."})
             result = client.move_study(
-                destination_ae=args["destination_node"], 
-                study_instance_uid=args["study_instance_uid"]
+                destination_ae=dest, 
+                study_instance_uid=uid
             )
             return json.dumps(result, default=str)
 
-        return f"Erro: Ferramenta {name} desconhecida."
+        return json.dumps({"error": f"Ferramenta {name} desconhecida."})
 
     except Exception as e:
-        return f"Erro de execução: {str(e)}"
+        return json.dumps({"error": f"Erro de execução: {str(e)}"})
