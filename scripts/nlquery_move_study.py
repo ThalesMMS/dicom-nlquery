@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import logging
 import sys
 import types
 from pathlib import Path
@@ -26,6 +27,7 @@ from dicom_nlquery.config import load_config
 from dicom_nlquery.dicom_search import execute_search
 from dicom_nlquery.models import GuardrailsConfig, LLMConfig, MatchingConfig
 from dicom_nlquery.nl_parser import parse_nl_to_criteria
+from dicom_nlquery.logging_config import JsonFormatter, configure_logging
 
 
 def _load_dicom_mcp_client():
@@ -70,6 +72,16 @@ def _load_optional_config(path: str | None):
     return None
 
 
+def _setup_logging(verbose: bool, log_file: str | None) -> logging.Logger:
+    level = "DEBUG" if verbose else "INFO"
+    logger = configure_logging(level)
+    if log_file:
+        handler = logging.FileHandler(log_file)
+        handler.setFormatter(JsonFormatter())
+        logging.getLogger().addHandler(handler)
+    return logger
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="NL query via dicom-nlquery + C-MOVE via dicom-mcp",
@@ -102,6 +114,8 @@ def main() -> int:
         action="store_true",
         help="Move all matched accessions (default: first only)",
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logs")
+    parser.add_argument("--log-file", default=None, help="Write JSON logs to file")
     parser.add_argument(
         "--llm-base-url",
         default=None,
@@ -113,6 +127,24 @@ def main() -> int:
         help="Override LLM model (default: config or llama3.2:latest)",
     )
     args = parser.parse_args()
+
+    logger = _setup_logging(args.verbose, args.log_file)
+    logger.info(
+        "Starting NL query move",
+        extra={
+            "extra_data": {
+                "host": args.host,
+                "port": args.port,
+                "called_aet": args.called_aet,
+                "calling_aet": args.calling_aet,
+                "destination_ae": args.destination_ae,
+                "date_range": args.date_range,
+                "max_studies": args.max_studies,
+                "unlimited": args.unlimited,
+                "query_length": len(args.query),
+            }
+        },
+    )
 
     config = _load_optional_config(args.config)
     if config:
@@ -140,6 +172,7 @@ def main() -> int:
     except Exception as exc:
         print(f"Erro ao parsear a consulta: {exc}")
         return 3
+    logger.info("Criteria parsed", extra={"extra_data": criteria.model_dump()})
 
     try:
         DicomClient = _load_dicom_mcp_client()
@@ -166,6 +199,15 @@ def main() -> int:
     except Exception as exc:
         print(f"Erro na busca DICOM: {exc}")
         return 2
+    logger.info(
+        "Search completed",
+        extra={
+            "extra_data": {
+                "accession_count": len(result.accession_numbers),
+                "stats": result.stats.model_dump(),
+            }
+        },
+    )
 
     accessions = list(dict.fromkeys(result.accession_numbers))
     if not accessions:
@@ -196,6 +238,18 @@ def main() -> int:
             study_instance_uid=study_uid,
         )
         print(f"Move {accession}: {move_result}")
+        logger.info(
+            "Move study result",
+            extra={
+                "extra_data": {
+                    "accession": accession,
+                    "success": move_result.get("success"),
+                    "completed": move_result.get("completed"),
+                    "failed": move_result.get("failed"),
+                    "warning": move_result.get("warning"),
+                }
+            },
+        )
         if move_result.get("success"):
             successes += 1
 

@@ -22,7 +22,7 @@ llm:
 
 guardrails:
   study_date_range_default_days: 180
-  max_studies_scanned_default: 2000
+  max_studies_scanned_default: 100
 
 matching:
   head_keywords:

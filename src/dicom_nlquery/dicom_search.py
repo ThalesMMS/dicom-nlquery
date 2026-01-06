@@ -67,6 +67,10 @@ class DicomSearchEngine:
                 criteria.study_narrowing.study_description_keywords
             )
 
+        log = logging.getLogger(__name__)
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("C-FIND study filters", extra={"extra_data": {"filters": kwargs}})
+
         extra_attrs = ["PatientSex", "PatientBirthDate", "ModalitiesInStudy"]
         try:
             return list(self._client.query_study(**kwargs, additional_attrs=extra_attrs))
@@ -113,6 +117,25 @@ def execute_search(
     )
 
     studies = engine.find_studies(criteria, date_range=effective_date_range)
+    if log.isEnabledFor(logging.DEBUG):
+        modalities = {}
+        for study in studies:
+            raw = _get_attr(study, "ModalitiesInStudy")
+            if isinstance(raw, str):
+                values = [m.strip().upper() for m in raw.split("\\") if m.strip()]
+            elif raw is None:
+                values = []
+            else:
+                values = [str(m).upper() for m in raw]
+            if not values:
+                modalities["UNKNOWN"] = modalities.get("UNKNOWN", 0) + 1
+            else:
+                for value in values:
+                    modalities[value] = modalities.get(value, 0) + 1
+        log.debug(
+            "C-FIND studies returned",
+            extra={"extra_data": {"count": len(studies), "modalities": modalities}},
+        )
     stats = SearchStats(
         studies_scanned=0,
         studies_matched=0,
