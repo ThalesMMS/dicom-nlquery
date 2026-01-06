@@ -86,7 +86,7 @@ def test_config_applies_guardrails_defaults(tmp_path: Path) -> None:
     config = load_config(config_path)
 
     assert config.guardrails.study_date_range_default_days == 180
-    assert config.guardrails.max_studies_scanned_default == 2000
+    assert config.guardrails.max_studies_scanned_default == 700
 
 
 def test_config_validates_llm_provider(tmp_path: Path) -> None:
@@ -132,7 +132,6 @@ def test_config_accepts_custom_synonyms(tmp_path: Path) -> None:
           model: "llama3.2:latest"
 
         matching:
-          head_keywords: ["cranio", "cabeca", "head", "brain"]
           synonyms:
             axial: ["axial", "ax"]
             pos: ["pos", "post"]

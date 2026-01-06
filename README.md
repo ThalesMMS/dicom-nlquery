@@ -101,7 +101,6 @@ guardrails:
   max_studies_scanned_default: 2000
 
 matching:
-  head_keywords: ["cranio", "cabeca", "head", "brain"]
   synonyms:
     axial: ["axial", "ax"]
     pos: ["pos", "post"]

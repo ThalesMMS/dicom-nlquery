@@ -25,13 +25,6 @@ guardrails:
   max_studies_scanned_default: 700
 
 matching:
-  head_keywords:
-    - "cranio"
-    - "cabeca"
-    - "head"
-    - "brain"
-    - "cerebro"
-    - "encefalico"
   synonyms:
     axial: ["axial", "ax", "tra", "transversal"]
     pos: ["pos", "p\u00f3s", "post", "c+", "gd", "gadolinio"]

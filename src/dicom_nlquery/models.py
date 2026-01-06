@@ -32,9 +32,7 @@ class GuardrailsConfig(BaseModel):
 
 
 class MatchingConfig(BaseModel):
-    head_keywords: list[str] = Field(
-        default_factory=lambda: ["cranio", "cabeca", "head", "brain"]
-    )
+    head_keywords: list[str] = Field(default_factory=list)
     synonyms: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -136,7 +134,12 @@ class SearchCriteria(BaseModel):
             )
         has_head = bool(self.head_keywords)
         has_series = bool(self.required_series)
-        if not (has_patient or has_head or has_series):
+        has_narrowing = False
+        if self.study_narrowing is not None:
+            has_narrowing = bool(self.study_narrowing.modality_in_study) or bool(
+                self.study_narrowing.study_description_keywords
+            )
+        if not (has_patient or has_head or has_series or has_narrowing):
             raise ValueError("at least one filter must be specified")
         return self
 

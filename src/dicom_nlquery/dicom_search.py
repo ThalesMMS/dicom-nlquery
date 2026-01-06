@@ -112,9 +112,7 @@ def execute_search(
             }
         },
     )
-    head_keywords = criteria.head_keywords or (
-        matching_config.head_keywords if matching_config else None
-    )
+    head_keywords = criteria.head_keywords
 
     studies = engine.find_studies(criteria, date_range=effective_date_range)
     if log.isEnabledFor(logging.DEBUG):
