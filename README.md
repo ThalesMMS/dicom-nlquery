@@ -59,6 +59,21 @@ Notes:
 - Ensure your PACS/Orthanc allows the calling AET (`calling_aet` in config).
   The included Orthanc test compose already allows `NLQUERY` and `TESTSCU`.
 
+## Move studies with dicom-mcp (NL query -> C-MOVE)
+
+This script parses a natural language query using dicom-nlquery and then uses
+dicom-mcp to C-MOVE the first matched study to MONAI-DEPLOY.
+
+```bash
+cd dicom-nlquery
+
+python scripts/nlquery_move_study.py \
+  "mulheres de 20 a 40 anos com cranio" \
+  --host localhost --port 11112 --called-aet RADIANT \
+  --calling-aet MCPSCU --destination-ae MONAI-DEPLOY \
+  --date-range 20100101-20991231
+```
+
 ## Configuration
 
 Use `config.yaml` for real PACS or `config-test.yaml` for Orthanc. Example:
