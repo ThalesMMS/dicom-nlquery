@@ -8,15 +8,15 @@ DICOM_TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "search_studies",
-            "description": "Busca inicial ampla por estudos. Use para reduzir o universo de busca (ex: data, modalidade).",
+            "description": "Busca estudos DICOM. TODOS os parâmetros são OPCIONAIS. Omita parâmetros que não precisa filtrar. Chamada sem parâmetros retorna todos os estudos.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "patient_id": {"type": "string"},
-                    "study_date": {"type": "string", "description": "YYYYMMDD ou intervalo YYYYMMDD-YYYYMMDD"},
-                    "modality": {"type": "string", "description": "Modalidade principal (MR, CT, US)"},
-                    "patient_sex": {"type": "string", "enum": ["F", "M", "O"]},
-                    "study_description": {"type": "string", "description": "Filtro de texto (wildcards * permitidos)"}
+                    "patient_id": {"type": "string", "description": "ID do paciente (opcional)"},
+                    "study_date": {"type": "string", "description": "Data YYYYMMDD ou intervalo YYYYMMDD-YYYYMMDD (opcional)"},
+                    "modality": {"type": "string", "description": "MR, CT, US, etc. (opcional)"},
+                    "patient_sex": {"type": "string", "description": "F=feminino, M=masculino. Omita se não relevante."},
+                    "study_description": {"type": "string", "description": "Filtro de texto com wildcards * (opcional)"}
                 }
             }
         }
@@ -58,12 +58,15 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
     try:
         if name == "search_studies":
             # Filtra argumentos vazios para não mandar wildcards desnecessários
+            sex = args.get("patient_sex")
+            if sex and sex not in ("F", "M"):
+                sex = None  # Ignora valores inválidos como 'O'
             query_args = {
                 k: v for k, v in {
                     "patient_id": args.get("patient_id"),
                     "study_date": args.get("study_date"),
                     "modality": args.get("modality"),
-                    "patient_sex": args.get("patient_sex"),
+                    "patient_sex": sex,
                     "study_description": args.get("study_description"),
                 }.items() if v  # Remove strings vazias e None
             }
