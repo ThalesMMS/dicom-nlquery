@@ -56,6 +56,11 @@ class JsonFormatter(logging.Formatter):
 
 def configure_logging(level: str | int = "INFO") -> logging.Logger:
     import sys
+
+    class _DynamicStreamHandler(logging.StreamHandler):
+        def emit(self, record: logging.LogRecord) -> None:  # type: ignore[override]
+            self.stream = sys.stderr
+            super().emit(record)
     
     # Force root logger to DEBUG to capture everything for the file
     # The 'level' argument acts as a minimum for the console if needed, 
@@ -77,7 +82,7 @@ def configure_logging(level: str | int = "INFO") -> logging.Logger:
     root.addHandler(file_handler)
 
     # 2. Console Handler - Text formatted, clean (INFO)
-    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler = _DynamicStreamHandler()
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter('%(levelname)s: %(message)s')
     console_handler.setFormatter(console_formatter)

@@ -35,7 +35,7 @@ def main() -> None:
         print("Erro: mcp.config_path nao configurado no config.yaml")
         return
 
-    criteria = parse_nl_to_criteria(args.query, config.llm)
+    criteria = parse_nl_to_criteria(args.query, config.llm, strict_evidence=True)
     print("Criteria:")
     print(criteria.model_dump_json(indent=2))
 

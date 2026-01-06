@@ -6,7 +6,7 @@ llm:
   timeout: 60
 
 guardrails:
-  study_date_range_default_days: 180
+  study_date_range_default_days: 36500
   max_studies_scanned_default: 700
 
 mcp:

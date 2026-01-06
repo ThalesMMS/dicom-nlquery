@@ -368,7 +368,7 @@ def main() -> int:
         return 2
 
     try:
-        criteria = parse_nl_to_criteria(args.query, llm_config)
+        criteria = parse_nl_to_criteria(args.query, llm_config, strict_evidence=True)
     except Exception as exc:
         print(f"Erro ao parsear a consulta: {exc}")
         return 3

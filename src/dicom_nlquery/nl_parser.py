@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from datetime import date
 
 from pydantic import ValidationError
 
 from .llm_client import OllamaClient
-from .models import LLMConfig, SearchCriteria
+from .models import DATE_RE, LLMConfig, QueryStudiesArgs, SearchCriteria
 
 
 log = logging.getLogger(__name__)
@@ -47,7 +49,250 @@ Regras:
 8. Voce pode usar wildcard "*" nos campos de descricao se fizer sentido
 9. Se a consulta mencionar idade/faixa etaria, converta para patient_birth_date usando a data atual
 10. Nao invente modalidades: use apenas as que forem citadas no texto
+11. Nao inferir filtros. Se o usuario nao declarou explicitamente sexo, data, modalidade, descricao ou IDs, retorne null.
+12. Nunca use a data de hoje como StudyDate.
 """
+
+SEX_EVIDENCE = {
+    "M": ["masculino", "homem", "male"],
+    "F": ["feminino", "mulher", "female", "gestante"],
+    "O": ["outro", "outros", "other"],
+}
+MODALITY_EVIDENCE = {
+    "MR": ["rm", "ressonancia", "mri"],
+    "CT": ["tc", "tomografia", "ct"],
+    "US": ["us", "ultrassom", "ultrasom", "usg"],
+    "CR": ["rx", "raio x", "raio-x", "raiox"],
+    "DX": ["rx", "raio x", "raio-x", "raiox"],
+    "SR": ["relatorio", "relatorio estruturado", "structured report", "sr"],
+    "PDF": ["pdf", "documento"],
+}
+STOPWORDS = {
+    "de",
+    "da",
+    "do",
+    "dos",
+    "das",
+    "para",
+    "pra",
+    "pro",
+    "no",
+    "na",
+    "nos",
+    "nas",
+}
+DATE_HINT_RE = re.compile(
+    r"\b(hoje|ontem|semana(s)?|mes(es)?|dia(s)?|passad[ao]s?|ultim[ao]s?|recente(s)?|recentemente)\b"
+)
+DATE_TOKEN_RE = re.compile(r"\b\d{8}\b|\b\d{4}[-/]\d{2}[-/]\d{2}\b|\b\d{8}-\d{8}\b")
+AGE_RANGE_RE = re.compile(r"\b\d{1,3}\s*a\s*\d{1,3}\s*anos?\b")
+AGE_RE = re.compile(r"\b\d{1,3}\s*anos?\b")
+DESTINATION_RE = re.compile(r"\bpara\s+([a-z0-9_-]+)\b")
+
+
+def _normalize_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in normalized if not unicodedata.combining(c)).lower()
+
+
+def _normalize_token(token: str) -> str:
+    normalized = _normalize_text(token)
+    return re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def _has_id_evidence(value: str, query_norm: str) -> bool:
+    value_norm = _normalize_text(value)
+    return bool(value_norm) and value_norm in query_norm
+
+
+def _has_sex_evidence(value: str, query_norm: str) -> bool:
+    tokens = SEX_EVIDENCE.get(value.upper(), [])
+    return any(token in query_norm for token in tokens)
+
+
+def _has_date_evidence(value: str, query_norm: str) -> bool:
+    digits = re.findall(r"\d{4}", value)
+    if any(d in query_norm for d in digits):
+        return True
+    return bool(DATE_HINT_RE.search(query_norm))
+
+
+def _has_birth_date_evidence(value: str, query_norm: str) -> bool:
+    digits = re.findall(r"\d{4}", value)
+    if any(d in query_norm for d in digits):
+        return True
+    if AGE_RANGE_RE.search(query_norm) or AGE_RE.search(query_norm):
+        return True
+    if "nasc" in query_norm:
+        return True
+    return False
+
+
+def _query_mentions_date(query_norm: str) -> bool:
+    return bool(DATE_TOKEN_RE.search(query_norm) or DATE_HINT_RE.search(query_norm))
+
+
+def _normalize_study_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if DATE_RE.match(normalized):
+        return normalized
+    if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}$", normalized):
+        return normalized.replace("-", "").replace("/", "")
+    parts = re.findall(r"\d{4}[-/]\d{2}[-/]\d{2}", normalized)
+    if len(parts) == 2:
+        start = parts[0].replace("-", "").replace("/", "")
+        end = parts[1].replace("-", "").replace("/", "")
+        return f"{start}-{end}"
+    return None
+
+
+def _normalize_modality_value(value: str) -> str | None:
+    try:
+        parsed = QueryStudiesArgs.model_validate({"modality_in_study": value})
+    except ValidationError:
+        return None
+    return parsed.modality_in_study
+
+
+def _extract_modalities_from_query(query_norm: str) -> list[str]:
+    matched: list[str] = []
+    for code, tokens in MODALITY_EVIDENCE.items():
+        if any(token in query_norm for token in tokens):
+            matched.append(code)
+    return matched
+
+
+def _filter_modalities_by_query(value: str, query_norm: str) -> str | None:
+    normalized = _normalize_modality_value(value)
+    if not normalized:
+        return None
+    parts = [part for part in normalized.split("\\") if part]
+    kept: list[str] = []
+    for part in parts:
+        tokens = MODALITY_EVIDENCE.get(part.upper(), [])
+        if any(token in query_norm for token in tokens):
+            if part not in kept:
+                kept.append(part)
+    if not kept:
+        return None
+    return "\\".join(kept)
+
+
+def _strip_modality_tokens(description: str, modalities: list[str]) -> str | None:
+    if not description:
+        return description
+    remove_tokens: set[str] = set()
+    for modality in modalities:
+        for token in MODALITY_EVIDENCE.get(modality, []):
+            normalized = _normalize_token(token)
+            if normalized:
+                remove_tokens.add(normalized)
+    if not remove_tokens:
+        return description
+
+    tokens = description.split()
+    filtered: list[str] = []
+    for token in tokens:
+        normalized = _normalize_token(token)
+        if normalized in remove_tokens:
+            continue
+        if normalized in STOPWORDS:
+            continue
+        filtered.append(token)
+
+    if not filtered:
+        return None
+    return " ".join(filtered)
+
+
+def apply_evidence_guardrails(criteria: SearchCriteria, query: str) -> SearchCriteria:
+    query_norm = _normalize_text(query)
+    data = criteria.model_dump()
+    study = dict(data.get("study") or {})
+
+    if study.get("patient_id") and not _has_id_evidence(study["patient_id"], query_norm):
+        study["patient_id"] = None
+    if study.get("accession_number") and not _has_id_evidence(
+        study["accession_number"], query_norm
+    ):
+        study["accession_number"] = None
+    if study.get("study_instance_uid") and not _has_id_evidence(
+        study["study_instance_uid"], query_norm
+    ):
+        study["study_instance_uid"] = None
+    if study.get("patient_sex") and not _has_sex_evidence(
+        study["patient_sex"], query_norm
+    ):
+        study["patient_sex"] = None
+    if study.get("modality_in_study"):
+        study["modality_in_study"] = _filter_modalities_by_query(
+            study["modality_in_study"], query_norm
+        )
+    if study.get("study_date") and not _has_date_evidence(study["study_date"], query_norm):
+        study["study_date"] = None
+    if study.get("patient_birth_date") and not _has_birth_date_evidence(
+        study["patient_birth_date"], query_norm
+    ):
+        study["patient_birth_date"] = None
+    if not study.get("modality_in_study"):
+        fallback_modalities = _extract_modalities_from_query(query_norm)
+        if fallback_modalities:
+            study["modality_in_study"] = "\\".join(fallback_modalities)
+
+    modalities = []
+    if study.get("modality_in_study"):
+        modalities = [part for part in str(study["modality_in_study"]).split("\\") if part]
+    if study.get("study_description") and modalities:
+        study["study_description"] = _strip_modality_tokens(
+            study["study_description"],
+            modalities,
+        )
+    if study.get("study_description"):
+        match = DESTINATION_RE.search(query_norm)
+        if match and _normalize_text(study["study_description"]) == match.group(1):
+            study["study_description"] = None
+
+    has_study_filters = any(
+        study.get(field)
+        for field in (
+            "patient_id",
+            "patient_sex",
+            "patient_birth_date",
+            "study_date",
+            "modality_in_study",
+            "study_description",
+            "accession_number",
+            "study_instance_uid",
+        )
+    )
+    if not has_study_filters and study.get("modality_in_study"):
+        has_study_filters = True
+
+    data["study"] = study
+    series = data.get("series")
+    if isinstance(series, dict):
+        if not any(
+            series.get(field)
+            for field in (
+                "modality",
+                "series_number",
+                "series_description",
+                "series_instance_uid",
+            )
+        ):
+            data["series"] = None
+
+    if not has_study_filters and data.get("series") is None:
+        raise ValueError("Consulta nao especifica filtros validos.")
+
+    try:
+        return SearchCriteria.model_validate(data)
+    except ValidationError as exc:
+        raise ValueError("Consulta nao especifica filtros validos.") from exc
 
 
 def extract_json(text: str) -> dict:
@@ -85,7 +330,11 @@ def extract_json(text: str) -> dict:
     raise ValueError("No JSON object found")
 
 
-def parse_nl_to_criteria(query: str, llm: LLMConfig | object) -> SearchCriteria:
+def parse_nl_to_criteria(
+    query: str,
+    llm: LLMConfig | object,
+    strict_evidence: bool = False,
+) -> SearchCriteria:
     log.debug("Parsing NL query", extra={"extra_data": {"query_length": len(query)}})
     if hasattr(llm, "chat"):
         client = llm
@@ -94,13 +343,24 @@ def parse_nl_to_criteria(query: str, llm: LLMConfig | object) -> SearchCriteria:
     else:
         raise TypeError("llm must be an LLMConfig or client with chat()")
 
-    system_prompt = f"{SYSTEM_PROMPT}\nHoje: {date.today():%Y-%m-%d}"
+    system_prompt = SYSTEM_PROMPT
+    query_norm = _normalize_text(query)
+    if AGE_RANGE_RE.search(query_norm) or AGE_RE.search(query_norm):
+        system_prompt = f"{SYSTEM_PROMPT}\nHoje: {date.today():%Y-%m-%d}"
     raw = client.chat(system_prompt, query)
     data = extract_json(raw)
     try:
         criteria = SearchCriteria.model_validate(data)
     except ValidationError:
         raise
+    if strict_evidence:
+        criteria = apply_evidence_guardrails(criteria, query)
+    if criteria.study.study_date:
+        if _query_mentions_date(query_norm):
+            criteria.study.study_date = _normalize_study_date(criteria.study.study_date)
+        else:
+            criteria.study.study_date = None
+
     log.debug(
         "NL criteria parsed",
         extra={

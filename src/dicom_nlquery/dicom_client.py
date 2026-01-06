@@ -73,6 +73,11 @@ class DicomClient:
         ds = Dataset()
         ds.QueryRetrieveLevel = "STUDY"
 
+        def _wildcard_contains(value: str) -> str:
+            if "*" in value or "?" in value:
+                return value
+            return f"*{value}*"
+
         if kwargs.get("patient_id"):
             ds.PatientID = kwargs["patient_id"]
         if kwargs.get("patient_sex"):
@@ -84,7 +89,7 @@ class DicomClient:
         if kwargs.get("modality"):
             ds.ModalitiesInStudy = kwargs["modality"]
         if kwargs.get("study_description"):
-            ds.StudyDescription = kwargs["study_description"]
+            ds.StudyDescription = _wildcard_contains(kwargs["study_description"])
         if kwargs.get("accession_number"):
             ds.AccessionNumber = kwargs["accession_number"]
         if kwargs.get("study_instance_uid"):
@@ -112,12 +117,17 @@ class DicomClient:
         ds.QueryRetrieveLevel = "SERIES"
         ds.StudyInstanceUID = study_instance_uid
 
+        def _wildcard_contains(value: str) -> str:
+            if "*" in value or "?" in value:
+                return value
+            return f"*{value}*"
+
         if kwargs.get("series_instance_uid"):
             ds.SeriesInstanceUID = kwargs["series_instance_uid"]
         if kwargs.get("modality"):
             ds.Modality = kwargs["modality"]
         if kwargs.get("series_description"):
-            ds.SeriesDescription = kwargs["series_description"]
+            ds.SeriesDescription = _wildcard_contains(kwargs["series_description"])
 
         attrs = [
             "SeriesInstanceUID",

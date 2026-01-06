@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from dicom_nlquery.models import SearchCriteria, SeriesQuery, StudyQuery
+from dicom_nlquery.models import QueryStudiesArgs, SearchCriteria, SeriesQuery, StudyQuery
 
 
 def test_search_criteria_requires_filters() -> None:
@@ -30,3 +30,9 @@ def test_series_query_accepts_filters() -> None:
 
     assert criteria.series is not None
     assert criteria.series.modality == "MR"
+
+
+def test_query_studies_modality_accepts_extra_text() -> None:
+    args = QueryStudiesArgs.model_validate({"modality_in_study": "RM com contraste"})
+
+    assert args.modality_in_study == "MR"

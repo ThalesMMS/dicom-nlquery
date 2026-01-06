@@ -17,6 +17,123 @@ def _get_attr(obj: object, key: str) -> object | None:
     return getattr(obj, key, None)
 
 
+def _normalize_str(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _contains_casefold(haystack: object | None, needle: str) -> bool:
+    if haystack is None:
+        return False
+    hay = str(haystack).casefold()
+    ned = needle.casefold()
+    stripped = ned.replace("*", "").replace("?", "").strip()
+    if not stripped:
+        return True
+    return stripped in hay
+
+
+def _date_matches(candidate: str | None, filter_value: str) -> bool:
+    if candidate is None:
+        return False
+    cand = candidate.strip()
+    if not cand:
+        return False
+    filt = filter_value.strip()
+    if "-" in filt:
+        start, end = filt.split("-", 1)
+        start = start.strip()
+        end = end.strip()
+        if start and cand < start:
+            return False
+        if end and cand > end:
+            return False
+        return True
+    return cand == filt
+
+
+def _study_matches_criteria(
+    study: object,
+    criteria: SearchCriteria,
+    explicit_study_date: str | None,
+) -> bool:
+    filters = criteria.study
+
+    if filters.patient_id:
+        if _normalize_str(_get_attr(study, "PatientID")) != filters.patient_id:
+            return False
+
+    if filters.patient_sex:
+        if _normalize_str(_get_attr(study, "PatientSex")) != filters.patient_sex:
+            return False
+
+    if filters.patient_birth_date:
+        candidate_birth_date = _normalize_str(_get_attr(study, "PatientBirthDate"))
+        if candidate_birth_date is None or not _date_matches(
+            candidate_birth_date, filters.patient_birth_date
+        ):
+            return False
+
+    if explicit_study_date:
+        candidate_date = _normalize_str(_get_attr(study, "StudyDate"))
+        if candidate_date is None or not _date_matches(candidate_date, explicit_study_date):
+            return False
+
+    if filters.modality_in_study:
+        raw_modalities = _get_attr(study, "ModalitiesInStudy")
+        if raw_modalities is None:
+            return False
+        if isinstance(raw_modalities, str):
+            values = [m.strip().upper() for m in raw_modalities.split("\\") if m.strip()]
+        else:
+            values = [str(m).strip().upper() for m in raw_modalities if str(m).strip()]
+        if filters.modality_in_study.upper() not in values:
+            return False
+
+    if filters.study_description:
+        if not _contains_casefold(_get_attr(study, "StudyDescription"), filters.study_description):
+            return False
+
+    if filters.accession_number:
+        if _normalize_str(_get_attr(study, "AccessionNumber")) != filters.accession_number:
+            return False
+
+    if filters.study_instance_uid:
+        if _normalize_str(_get_attr(study, "StudyInstanceUID")) != filters.study_instance_uid:
+            return False
+
+    return True
+
+
+def _series_matches_criteria(series: object, criteria: SearchCriteria) -> bool:
+    if criteria.series is None:
+        return True
+    filters = criteria.series
+
+    if filters.series_instance_uid:
+        if _normalize_str(_get_attr(series, "SeriesInstanceUID")) != filters.series_instance_uid:
+            return False
+
+    if filters.modality:
+        if _normalize_str(_get_attr(series, "Modality")) != filters.modality:
+            return False
+
+    if filters.series_number:
+        if _normalize_str(_get_attr(series, "SeriesNumber")) != filters.series_number:
+            return False
+
+    if filters.series_description:
+        if not _contains_casefold(
+            _get_attr(series, "SeriesDescription"),
+            filters.series_description,
+        ):
+            return False
+
+    return True
+
+
 def apply_guardrails(
     guardrails: GuardrailsConfig,
     date_range: str | None = None,
@@ -68,6 +185,7 @@ def execute_search(
         logger=log,
     )
     resolved_study_date = date_range or criteria.study.study_date or effective_date_range
+    explicit_study_date = date_range or criteria.study.study_date
     log.info(
         "Starting DICOM search",
         extra={
@@ -88,6 +206,7 @@ def execute_search(
             criteria,
             mcp_config,
             resolved_study_date,
+            explicit_study_date,
             effective_max_studies,
             log,
             start_time,
@@ -98,6 +217,7 @@ def execute_search(
         criteria,
         query_client,
         resolved_study_date,
+        explicit_study_date,
         effective_max_studies,
         log,
         start_time,
@@ -108,6 +228,7 @@ def _execute_with_client(
     criteria: SearchCriteria,
     query_client: object,
     study_date: str | None,
+    explicit_study_date: str | None,
     max_studies: int | None,
     log: logging.Logger,
     start_time: float,
@@ -117,6 +238,10 @@ def _execute_with_client(
         query_client, "query_study"
     )
     studies = list(query_studies(**study_args))
+    if not studies and criteria.study.study_description:
+        relaxed_args = dict(study_args)
+        relaxed_args.pop("study_description", None)
+        studies = list(query_studies(**relaxed_args))
     if log.isEnabledFor(logging.DEBUG):
         modalities = {}
         for study in studies:
@@ -161,6 +286,10 @@ def _execute_with_client(
             )
             break
         stats.studies_scanned += 1
+
+        if not _study_matches_criteria(study, criteria, explicit_study_date):
+            continue
+
         if has_series_filters:
             study_uid = _get_attr(study, "StudyInstanceUID")
             if not study_uid:
@@ -170,7 +299,9 @@ def _execute_with_client(
             if query_series is None:
                 raise RuntimeError("query_client lacks query_series()")
             series_list = list(query_series(study_instance_uid=study_uid, **series_args))
-            if not series_list:
+            if not series_list or not any(
+                _series_matches_criteria(item, criteria) for item in series_list
+            ):
                 stats.studies_filtered_series += 1
                 continue
 
@@ -189,6 +320,7 @@ async def _execute_with_mcp(
     criteria: SearchCriteria,
     mcp_config: McpServerConfig,
     study_date: str | None,
+    explicit_study_date: str | None,
     max_studies: int | None,
     log: logging.Logger,
     start_time: float,
@@ -201,6 +333,10 @@ async def _execute_with_mcp(
 
         study_args = _build_study_args(criteria, study_date)
         studies = list(await client.query_studies(**study_args))
+        if not studies and criteria.study.study_description:
+            relaxed_args = dict(study_args)
+            relaxed_args.pop("study_description", None)
+            studies = list(await client.query_studies(**relaxed_args))
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "C-FIND studies returned",
@@ -232,6 +368,10 @@ async def _execute_with_mcp(
                 )
                 break
             stats.studies_scanned += 1
+
+            if not _study_matches_criteria(study, criteria, explicit_study_date):
+                continue
+
             if has_series_filters:
                 study_uid = _get_attr(study, "StudyInstanceUID")
                 if not study_uid:
@@ -243,7 +383,9 @@ async def _execute_with_mcp(
                         **series_args,
                     )
                 )
-                if not series_list:
+                if not series_list or not any(
+                    _series_matches_criteria(item, criteria) for item in series_list
+                ):
                     stats.studies_filtered_series += 1
                     continue
 
@@ -260,8 +402,12 @@ async def _execute_with_mcp(
 
 def _build_study_args(criteria: SearchCriteria, study_date: str | None) -> dict[str, object]:
     args = criteria.study.model_dump(exclude_none=True)
-    if study_date and not args.get("study_date"):
+    if study_date:
         args["study_date"] = study_date
+    if "study_description" in args:
+        desc = str(args["study_description"]).strip()
+        if desc and "*" not in desc and "?" not in desc:
+            args["study_description"] = f"*{desc}*"
     return args
 
 

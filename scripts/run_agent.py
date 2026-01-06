@@ -12,8 +12,10 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("query", help="Ex: 'Mulheres jovens com esclerose (FLAIR)'")
-    parser.add_argument("--dest", required=True, help="Node de destino (ex: RADIANT)")
+    parser.add_argument(
+        "query",
+        help="Ex: 'RM de crânio de mulheres de 20 a 40 anos para RADIANT'",
+    )
     args = parser.parse_args()
 
     # 1. Config
@@ -38,11 +40,8 @@ def main():
     llm = OllamaClient.from_config(config.llm)
     agent = DicomAgent(llm, client)
 
-    # 4. Injeta o destino no contexto
-    query_full = f"{args.query}. Se encontrar, mova para '{args.dest}'."
-    
     print(f"🚀 Iniciando investigação para: {args.query}")
-    resposta = agent.run(query_full)
+    resposta = agent.run(args.query)
     
     print(f"\n🤖 Resposta:\n{resposta}")
 

@@ -51,6 +51,24 @@ com o node Orthanc.
 `dicom-mcp` is installed in the same venv and that `mcp.config_path` points to a
 valid dicom-mcp YAML.
 
+## Agent protocol (stateful)
+
+The DICOM agent follows a deterministic, stateful pipeline:
+
+1. `query_studies` to fetch candidate studies.
+2. If multiple results, the agent requires an explicit `study_instance_uid` selection.
+3. `query_series` to inspect metadata for the chosen study.
+4. `move_study` only after a valid UID is confirmed.
+
+Tool-call protocol:
+- Emit tool calls only via `tool_calls` (no JSON in text).
+- One tool call per step.
+- `destination_node` must be explicit for `move_study` (never inferred).
+
+Operational guardrails (like a default date range) may be applied to protect PACS
+performance, but clinical filters are never inferred unless explicitly stated by
+the user.
+
 ## Move studies with dicom-mcp (NL query -> C-MOVE)
 
 This script parses a natural language query using dicom-nlquery and then uses

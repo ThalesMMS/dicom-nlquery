@@ -67,7 +67,6 @@ class OllamaClient:
         )
         return content
     
-    # Em src/dicom_nlquery/llm_client.py
     def chat_with_tools(self, messages: list, tools: list) -> dict:
         payload = {
             "model": self.model,
@@ -79,4 +78,11 @@ class OllamaClient:
         # Endpoint nativo do Ollama compatível com OpenAI
         response = self._client.post(f"{self.base_url}/api/chat", json=payload)
         response.raise_for_status()
-        return response.json().get("message", {})
+        message = response.json().get("message", {})
+        if "tool_calls" in message and not isinstance(message.get("tool_calls"), list):
+            raise ValueError("tool_calls must be a list")
+        for call in message.get("tool_calls", []) or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not function or "name" not in function:
+                raise ValueError("tool_call missing function name")
+        return message

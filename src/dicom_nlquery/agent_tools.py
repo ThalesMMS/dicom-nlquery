@@ -1,207 +1,195 @@
+from __future__ import annotations
+
 import json
-import re
-import unicodedata
-from typing import List, Dict, Any
+from typing import Any, Iterable
+
+from pydantic import ValidationError
+
 from .dicom_client import DicomClient
+from .dicom_search import apply_guardrails
+from .models import (
+    AgentState,
+    GuardrailsConfig,
+    MoveStudyArgs,
+    QuerySeriesArgs,
+    QueryStudiesArgs,
+    StudySummary,
+    ToolError,
+    ToolName,
+    ToolResult,
+)
 
-# Mantenha o DICOM_TOOLS_SCHEMA igual...
-DICOM_TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_studies",
-            "description": "Busca estudos DICOM. Retorna lista de UIDs. Use series_description para filtrar por características de série (ex: contraste, difusão, T1, T2).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "patient_id": {"type": "string"},
-                    "study_date": {"type": "string", "description": "YYYYMMDD ou intervalo"},
-                    "modality": {"type": "string", "description": "MR, CT, US, CR"},
-                    "patient_sex": {"type": "string", "enum": ["F", "M"], "description": "USE APENAS SE TIVER CERTEZA."},
-                    "study_description": {"type": "string", "description": "Wildcards (*) para descrição do ESTUDO"},
-                    "series_description": {"type": "string", "description": "Wildcards (*) para descrição da SÉRIE. Use para filtrar por contraste (*gad*, *contrast*), sequências (*T1*, *DWI*), etc."}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "inspect_metadata",
-            "description": "Lista séries de um UID específico.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "study_instance_uid": {"type": "string"}
-                },
-                "required": ["study_instance_uid"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "move_study",
-            "description": "Move estudo para destino.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "study_instance_uid": {"type": "string"},
-                    "destination_node": {"type": "string"}
-                },
-                "required": ["study_instance_uid", "destination_node"]
-            }
-        }
-    }
-]
+MAX_RESULTS_DISPLAY = 5
+MAX_SERIES_DISPLAY = 15
 
-MODALITY_MAP = {
-    "RM": "MR",
-    "MRI": "MR",
-    "RESSONANCIA": "MR",
-    "RESSONANCIA MAGNETICA": "MR",
-    "RESSONANCIA MAGNÉTICA": "MR",
-    "TC": "CT",
-    "TOMOGRAFIA": "CT",
-    "USG": "US",
-    "ULTRASSOM": "US",
+TOOL_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.QUERY_STUDIES: (
+        "Busca estudos DICOM. Retorna lista de UIDs e metadados. "
+        "Use filtros apenas quando explicitamente citados pelo usuario."
+    ),
+    ToolName.QUERY_SERIES: "Lista series de um estudo especifico.",
+    ToolName.MOVE_STUDY: "Move estudo para um node de destino.",
 }
 
-ALLOWED_MODALITIES = {"MR", "CT", "US", "CR", "DX", "SR", "PDF"}
-UID_RE = re.compile(r"^\d+(?:\.\d+)+$")
+TOOL_ARGS_MODELS = {
+    ToolName.QUERY_STUDIES: QueryStudiesArgs,
+    ToolName.QUERY_SERIES: QuerySeriesArgs,
+    ToolName.MOVE_STUDY: MoveStudyArgs,
+}
 
 
-def _normalize_text(value: str) -> str:
-    """Remove acentos para normalizar comparações de string."""
-    return "".join(c for c in unicodedata.normalize("NFKD", value) if not unicodedata.combining(c))
-
-
-def _normalize_modality(modality: str) -> str:
-    mod = _normalize_text(str(modality)).strip().upper()
-    mod = MODALITY_MAP.get(mod, mod)
-    return mod
-
-
-def _valid_uid(uid: str) -> bool:
-    return bool(UID_RE.match(uid))
-
-def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
+def _json_safe(value: Any | None) -> Any | None:
+    if value is None:
+        return None
     try:
-        if name == "search_studies":
-            # Limpa parâmetros vazios
-            params = {k: v for k, v in args.items() if v}
+        json.dumps(value)
+        return value
+    except TypeError:
+        return json.loads(json.dumps(value, default=str))
 
-            # Normaliza modalidade (sinônimos comuns -> códigos DICOM)
-            if "modality" in params:
-                mod = _normalize_modality(params["modality"])
-                if mod and mod not in ALLOWED_MODALITIES:
-                    return json.dumps({"error": f"Modality inválida: {mod}. Use {sorted(ALLOWED_MODALITIES)}"})
-                params["modality"] = mod
-            
-            # Corrige nomes de parâmetros comuns (LLM vs Pynetdicom)
-            if "modality" in params:
-                params["modality_in_study"] = params.pop("modality")
-            
-            # Validação estrita de sexo
-            if "patient_sex" in params:
-                sex = str(params["patient_sex"]).upper()
-                if sex not in ["M", "F"]:
-                    params.pop("patient_sex")
-                else:
-                    params["patient_sex"] = sex
 
-            # Fallback simples para “feto/fetal”: usa wildcard que cobre ambos
-            if "study_description" in params:
-                desc_norm = _normalize_text(str(params["study_description"])).lower()
-                if "feto" in desc_norm and "fet" not in desc_norm:
-                    params["study_description"] = "*fet*"
+def _tool_error(tool: ToolName, code: str, message: str, details: Any | None = None) -> ToolResult:
+    return ToolResult(
+        tool=tool,
+        ok=False,
+        error=ToolError(code=code, message=message, details=_json_safe(details)),
+    )
 
-            # Extrai filtro de série (será aplicado após query de estudos)
-            series_filter = params.pop("series_description", None)
 
-            try:
-                results = client.query_studies(**params)
-            except Exception as e:
-                return f"ERRO DE CONEXÃO: {str(e)}"
+def _ensure_schema_additional_properties(schema: dict[str, Any]) -> dict[str, Any]:
+    if "additionalProperties" not in schema:
+        schema["additionalProperties"] = False
+    return schema
 
-            # Se há filtro de série, filtra estudos que contenham séries correspondentes
-            if series_filter and results:
-                filtered_results = []
-                for study in results:
-                    uid = study.get("StudyInstanceUID")
-                    if not uid:
-                        continue
-                    try:
-                        series_list = client.query_series(
-                            study_instance_uid=uid,
-                            series_description=series_filter
-                        )
-                        if series_list:
-                            # Adiciona info das séries encontradas ao estudo
-                            study["_matching_series"] = [
-                                s.get("SeriesDescription", "") for s in series_list[:5]
-                            ]
-                            filtered_results.append(study)
-                    except Exception:
-                        pass
-                results = filtered_results
-                if not results:
-                    filtros_usados = ", ".join(list(params.keys()) + ["series_description"])
-                    return f"STATUS: Nenhum resultado encontrado com os filtros [{filtros_usados}]. Tente remover filtros ou usar wildcards diferentes."
 
-            if not results:
-                filtros_usados = ", ".join(params.keys())
-                return f"STATUS: Nenhum resultado encontrado com os filtros [{filtros_usados}]. Tente remover filtros."
+def get_tools_schema(allowed_tools: Iterable[ToolName] | None = None) -> list[dict[str, Any]]:
+    tools = []
+    selected = list(allowed_tools) if allowed_tools is not None else list(ToolName)
+    for tool in selected:
+        args_model = TOOL_ARGS_MODELS[tool]
+        schema = args_model.model_json_schema()
+        schema.pop("title", None)
+        schema = _ensure_schema_additional_properties(schema)
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.value,
+                    "description": TOOL_DESCRIPTIONS[tool],
+                    "parameters": schema,
+                },
+            }
+        )
+    return tools
 
-            # Resumo eficiente para LLM
-            summary = []
-            for study in results[:10]:
-                item = {
-                    "UID": study.get("StudyInstanceUID"),
-                    "Date": study.get("StudyDate"),
-                    "Modality": study.get("ModalitiesInStudy"),
-                    "Desc": study.get("StudyDescription"),
-                    "Patient": study.get("PatientName", "ANON")
-                }
-                # Inclui séries correspondentes se filtro de série foi usado
-                if "_matching_series" in study:
-                    item["MatchingSeries"] = study["_matching_series"]
-                summary.append(item)
-            return json.dumps(summary, indent=2)
 
-        elif name == "inspect_metadata":
-            uid = str(args.get("study_instance_uid", "")).strip()
-            if not uid or "<" in uid:
-                return "ERRO: UID inválido. Faça uma busca primeiro."
-            if not _valid_uid(uid):
-                return json.dumps({"error": f"study_instance_uid inválido: {uid}. Use formato 1.2.826.0.1..."})
-            
-            try:
-                series = client.query_series(study_instance_uid=uid)
-            except Exception as e:
-                return f"ERRO: {str(e)}"
-                
-            if not series:
-                return "STATUS: Estudo vazio."
-            
-            return json.dumps(series[:15], indent=2, default=str)
+def _summarize_study(study: dict[str, Any]) -> StudySummary | None:
+    uid = study.get("StudyInstanceUID")
+    if not uid:
+        return None
+    return StudySummary(
+        study_instance_uid=str(uid),
+        study_date=study.get("StudyDate"),
+        modalities_in_study=study.get("ModalitiesInStudy"),
+        study_description=study.get("StudyDescription"),
+        patient_name=study.get("PatientName"),
+        patient_id=study.get("PatientID"),
+        accession_number=study.get("AccessionNumber"),
+    )
 
-        elif name == "move_study":
-            uid = str(args.get("study_instance_uid", "")).strip()
-            dest = args.get("destination_node", "")
-            
-            if not uid or not dest:
-                return "ERRO: Parâmetros faltando."
-            if not _valid_uid(uid):
-                return json.dumps({"error": f"study_instance_uid inválido: {uid}. Use formato 1.2.826.0.1..."})
 
-            try:
-                res = client.move_study(destination_node=dest, study_instance_uid=uid)
-                return json.dumps(res, indent=2)
-            except Exception as e:
-                return f"ERRO C-MOVE: {str(e)}"
+def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: AgentState) -> ToolResult:
+    try:
+        tool = ToolName(name)
+    except ValueError:
+        return _tool_error(ToolName.QUERY_STUDIES, "unknown_tool", f"Ferramenta desconhecida: {name}")
 
-    except Exception as e:
-        return f"ERRO SISTÊMICO: {str(e)}"
-    
-    return f"Ferramenta {name} desconhecida."
+    args_model = TOOL_ARGS_MODELS[tool]
+    try:
+        parsed = args_model.model_validate(args)
+    except ValidationError as exc:
+        return _tool_error(tool, "validation_error", "Parametros invalidos", exc.errors())
+
+    if tool == ToolName.QUERY_STUDIES:
+        params = parsed.model_dump(exclude_none=True)
+        guardrails = GuardrailsConfig()
+        date_range_applied = None
+        if "study_date" not in params:
+            date_range, _ = apply_guardrails(guardrails)
+            if date_range:
+                params["study_date"] = date_range
+                date_range_applied = date_range
+                state.guardrail_date_range = date_range
+
+        try:
+            results = client.query_studies(**params)
+        except Exception as exc:
+            return _tool_error(tool, "connection_error", f"Erro de conexao: {exc}")
+
+        summaries: list[StudySummary] = []
+        for study in results:
+            summary = _summarize_study(study)
+            if summary is not None:
+                summaries.append(summary)
+
+        state.search_filters = params
+        state.search_results = summaries
+        state.selected_uid = None
+        state.last_tool = tool
+        state.last_error = None
+        state.requires_selection = len(summaries) > 1
+
+        data = [item.model_dump() for item in summaries[:MAX_RESULTS_DISPLAY]]
+        return ToolResult(
+            tool=tool,
+            ok=True,
+            data=data,
+            meta={
+                "count": len(summaries),
+                "truncated": len(summaries) > MAX_RESULTS_DISPLAY,
+                "date_range_applied": date_range_applied,
+            },
+        )
+
+    if tool == ToolName.QUERY_SERIES:
+        uid = parsed.study_instance_uid
+        if not state.has_uid(uid):
+            return _tool_error(tool, "uid_not_in_state", "UID nao encontrado no estado atual")
+
+        params = parsed.model_dump(exclude_none=True)
+        try:
+            series = client.query_series(**params)
+        except Exception as exc:
+            return _tool_error(tool, "connection_error", f"Erro ao consultar series: {exc}")
+
+        state.selected_uid = uid
+        state.last_tool = tool
+        state.last_error = None
+
+        return ToolResult(
+            tool=tool,
+            ok=True,
+            data=series[:MAX_SERIES_DISPLAY],
+            meta={"count": len(series), "truncated": len(series) > MAX_SERIES_DISPLAY},
+        )
+
+    if tool == ToolName.MOVE_STUDY:
+        uid = parsed.study_instance_uid
+        if not state.has_uid(uid):
+            return _tool_error(tool, "uid_not_in_state", "UID nao encontrado no estado atual")
+
+        try:
+            result = client.move_study(
+                destination_node=parsed.destination_node,
+                study_instance_uid=uid,
+            )
+        except Exception as exc:
+            return _tool_error(tool, "move_failed", f"Erro C-MOVE: {exc}")
+
+        state.selected_uid = uid
+        state.last_tool = tool
+        state.last_error = None
+
+        return ToolResult(tool=tool, ok=bool(result.get("success")), data=result)
+
+    return _tool_error(tool, "unsupported_tool", f"Ferramenta nao suportada: {tool.value}")

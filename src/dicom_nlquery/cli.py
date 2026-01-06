@@ -93,7 +93,7 @@ def dry_run(ctx: click.Context, config_path_override: Path | None, query: str) -
     config_path = str(config_path_override) if config_path_override else ctx.obj["config_path"]
     config = _load_config(config_path)
 
-    criteria = parse_nl_to_criteria(query, config.llm)
+    criteria = parse_nl_to_criteria(query, config.llm, strict_evidence=True)
     date_range, _ = apply_guardrails(config.guardrails)
     search_plan = _build_search_plan(criteria, date_range)
 
@@ -159,7 +159,7 @@ def execute(
         ctx.exit(3)
 
     try:
-        criteria = parse_nl_to_criteria(query, config.llm)
+        criteria = parse_nl_to_criteria(query, config.llm, strict_evidence=True)
     except Exception as exc:
         click.echo(f"Erro: {exc}", err=True)
         ctx.exit(3)
