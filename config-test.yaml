@@ -1,13 +1,3 @@
-nodes:
-  orthanc:
-    host: "localhost"
-    port: 4242
-    ae_title: "ORTHANC"
-    description: "Orthanc Docker para testes"
-
-current_node: "orthanc"
-calling_aet: "TESTSCU"
-
 llm:
   provider: "ollama"
   base_url: "http://127.0.0.1:11434"
@@ -19,7 +9,6 @@ guardrails:
   study_date_range_default_days: 365
   max_studies_scanned_default: 10
 
-matching:
-  synonyms:
-    axial: ["axial", "ax"]
-    pos: ["pos", "post"]
+mcp:
+  command: "dicom-mcp"
+  config_path: "../dicom-mcp/configuration.yaml"

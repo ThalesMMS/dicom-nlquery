@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dicom_nlquery.dicom_search import DicomSearchEngine, execute_search
-from dicom_nlquery.models import PatientFilter, SearchCriteria, SeriesRequirement
+from dicom_nlquery.dicom_search import execute_search
+from dicom_nlquery.models import SearchCriteria, SeriesQuery, StudyQuery
 
 
 class FakeDicomClient:
@@ -19,13 +19,15 @@ class FakeDicomClient:
         self.series_calls.append((study_instance_uid, kwargs))
         return list(self.series_by_uid.get(study_instance_uid, []))
 
+    def query_studies(self, **kwargs):
+        return self.query_study(**kwargs)
+
 
 def test_find_studies_passes_date_range() -> None:
     client = FakeDicomClient([], {})
-    engine = DicomSearchEngine(client)
-    criteria = SearchCriteria(patient=PatientFilter(sex="F"))
+    criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    engine.find_studies(criteria, date_range="20200101-20201231")
+    execute_search(criteria, query_client=client, date_range="20200101-20201231")
 
     assert client.study_calls
     assert client.study_calls[0]["study_date"] == "20200101-20201231"
@@ -68,19 +70,11 @@ def test_execute_search_filters_results() -> None:
     }
     client = FakeDicomClient(studies, series_by_uid)
     criteria = SearchCriteria(
-        patient=PatientFilter(sex="F", age_min=20, age_max=40),
-        head_keywords=["cranio"],
-        required_series=[
-            SeriesRequirement(
-                name="t1 cranio",
-                modality="MR",
-                within_head=True,
-                any_keywords=["t1"],
-            )
-        ],
+        study=StudyQuery(patient_sex="F", study_description="cranio"),
+        series=SeriesQuery(modality="MR", series_description="t1"),
     )
 
-    result = execute_search(criteria, client)
+    result = execute_search(criteria, query_client=client)
 
     assert result.accession_numbers == ["ACC001"]
     assert result.stats.studies_scanned == 2

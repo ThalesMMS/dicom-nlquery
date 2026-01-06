@@ -12,22 +12,30 @@ class FakeLLMClient:
 @pytest.fixture
 def fake_llm() -> FakeLLMClient:
     return FakeLLMClient(
-        '{\"patient\": {\"sex\": \"F\", \"age_min\": 20, \"age_max\": 40}, '
-        '\"head_keywords\": [\"cranio\"], '
-        '\"required_series\": [], '
-        '\"study_narrowing\": {\"modality_in_study\": null, \"study_description_keywords\": null}}'
+        '{\"study\": {'
+        '\"patient_id\": null, '
+        '\"patient_sex\": \"F\", '
+        '\"patient_birth_date\": null, '
+        '\"study_date\": null, '
+        '\"modality_in_study\": null, '
+        '\"study_description\": \"cranio\", '
+        '\"accession_number\": null, '
+        '\"study_instance_uid\": null'
+        '}, \"series\": null}'
     )
 
 
 @pytest.fixture
 def fake_llm_invalid() -> FakeLLMClient:
-    return FakeLLMClient('{\"patient\": {\"sex\": \"X\"}}')
+    return FakeLLMClient(
+        '{\"study\": {\"patient_sex\": \"X\", \"study_description\": \"cranio\"}}'
+    )
 
 
 @pytest.fixture
 def fake_llm_extra() -> FakeLLMClient:
     return FakeLLMClient(
-        '{\"patient\": {\"sex\": \"F\"}, \"unexpected\": 123, \"head_keywords\": []}'
+        '{\"study\": {\"patient_sex\": \"F\"}, \"unexpected\": 123}'
     )
 
 

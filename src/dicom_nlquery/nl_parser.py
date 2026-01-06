@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 
 from pydantic import ValidationError
 
@@ -14,27 +15,24 @@ log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Voce e um assistente que converte consultas em linguagem natural para criterios estruturados de busca DICOM.
 
-Sua tarefa e extrair criterios de busca do texto fornecido e retornar APENAS um objeto JSON valido seguindo este schema:
+Sua tarefa e extrair criterios de busca do texto fornecido e retornar APENAS um objeto JSON valido seguindo este schema (dicom-mcp):
 
 {
-  "patient": {
-    "sex": "F" | "M" | "O" | null,
-    "age_min": <numero inteiro ou null>,
-    "age_max": <numero inteiro ou null>
+  "study": {
+    "patient_id": "string" | null,
+    "patient_sex": "F" | "M" | "O" | null,
+    "patient_birth_date": "YYYYMMDD" | "YYYYMMDD-YYYYMMDD" | null,
+    "study_date": "YYYYMMDD" | "YYYYMMDD-YYYYMMDD" | null,
+    "modality_in_study": "MR" | "CT" | "US" | "CR" | "MR\\\\CT" | null,
+    "study_description": "texto livre" | null,
+    "accession_number": "string" | null,
+    "study_instance_uid": "string" | null
   },
-  "head_keywords": ["lista", "de", "keywords"],
-  "required_series": [
-    {
-      "name": "identificador da serie",
-      "modality": "codigo de modalidade DICOM" | null,
-      "within_head": true | false,
-      "all_keywords": ["todos", "obrigatorios"],
-      "any_keywords": ["qualquer", "um"]
-    }
-  ],
-  "study_narrowing": {
-    "modality_in_study": ["codigos", "de", "modalidade"] | null,
-    "study_description_keywords": ["keywords"] | null
+  "series": {
+    "modality": "MR" | "CT" | "US" | "CR" | null,
+    "series_number": "string" | null,
+    "series_description": "texto livre" | null,
+    "series_instance_uid": "string" | null
   }
 }
 
@@ -42,11 +40,11 @@ Regras:
 1. Retorne APENAS o JSON, sem explicacoes adicionais
 2. Use null para campos nao mencionados na consulta
 3. Para sexo: "mulher/feminino" = "F", "homem/masculino" = "M", "outro" = "O"
-4. Se a consulta indicar filtro por cabeca, use head_keywords com termos relevantes da consulta
-5. Para series especificas (ex: "axial MT pos"), crie um SeriesRequirement
-6. Normalize keywords para lowercase sem acentos
-7. Se a consulta menciona faixa etaria (ex: "20 a 40 anos"), use age_min e age_max
-8. Para modalidades, use codigos DICOM (ex: MR, CT, US, CR) quando mencionados
+4. Datas devem estar no formato DICOM YYYYMMDD ou intervalo YYYYMMDD-YYYYMMDD
+5. Para modalidades, use codigos DICOM (ex: MR, CT, US, CR). Use barra invertida para multiplas modalidades
+6. Para texto livre (ex: cranio, abdome), use study_description ou series_description conforme o contexto
+7. Voce pode usar wildcard "*" nos campos de descricao se fizer sentido
+8. Se a consulta mencionar idade/faixa etaria, converta para patient_birth_date usando a data atual
 """
 
 
@@ -94,20 +92,9 @@ def parse_nl_to_criteria(query: str, llm: LLMConfig | object) -> SearchCriteria:
     else:
         raise TypeError("llm must be an LLMConfig or client with chat()")
 
-    raw = client.chat(SYSTEM_PROMPT, query)
+    system_prompt = f"{SYSTEM_PROMPT}\nHoje: {date.today():%Y-%m-%d}"
+    raw = client.chat(system_prompt, query)
     data = extract_json(raw)
-    if isinstance(data, dict):
-        required_series = data.get("required_series")
-        if isinstance(required_series, list):
-            cleaned = []
-            for entry in required_series:
-                if not isinstance(entry, dict):
-                    continue
-                name = entry.get("name")
-                if not name:
-                    continue
-                cleaned.append(entry)
-            data["required_series"] = cleaned
     try:
         criteria = SearchCriteria.model_validate(data)
     except ValidationError:
@@ -116,15 +103,19 @@ def parse_nl_to_criteria(query: str, llm: LLMConfig | object) -> SearchCriteria:
         "NL criteria parsed",
         extra={
             "extra_data": {
-                "has_patient": criteria.patient is not None,
-                "required_series": len(criteria.required_series or []),
-                "has_study_narrowing": bool(
-                    criteria.study_narrowing
-                    and (
-                        criteria.study_narrowing.modality_in_study
-                        or criteria.study_narrowing.study_description_keywords
-                    )
+                "has_study_filters": any(
+                    [
+                        criteria.study.patient_id,
+                        criteria.study.patient_sex,
+                        criteria.study.patient_birth_date,
+                        criteria.study.study_date,
+                        criteria.study.modality_in_study,
+                        criteria.study.study_description,
+                        criteria.study.accession_number,
+                        criteria.study.study_instance_uid,
+                    ]
                 ),
+                "has_series_filters": criteria.series is not None,
             }
         },
     )

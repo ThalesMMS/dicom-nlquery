@@ -9,8 +9,7 @@ from dicom_nlquery.nl_parser import parse_nl_to_criteria
 def test_parser_returns_valid_criteria(fake_llm) -> None:
     criteria = parse_nl_to_criteria("mulheres de 20 a 40", fake_llm)
 
-    assert criteria.patient is not None
-    assert criteria.patient.sex == "F"
+    assert criteria.study.patient_sex == "F"
 
 
 def test_parser_rejects_invalid_schema(fake_llm_invalid) -> None:
@@ -21,5 +20,4 @@ def test_parser_rejects_invalid_schema(fake_llm_invalid) -> None:
 def test_parser_ignores_extra_fields(fake_llm_extra) -> None:
     criteria = parse_nl_to_criteria("query", fake_llm_extra)
 
-    assert criteria.patient is not None
-    assert criteria.patient.sex == "F"
+    assert criteria.study.patient_sex == "F"

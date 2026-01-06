@@ -14,7 +14,7 @@ from .logging_config import configure_logging
 from .nl_parser import parse_nl_to_criteria
 
 
-def _load_config(config_path: str, node_override: str | None):
+def _load_config(config_path: str):
     try:
         config = load_config(config_path)
     except FileNotFoundError as exc:
@@ -24,58 +24,21 @@ def _load_config(config_path: str, node_override: str | None):
     except (ValueError, ValidationError) as exc:
         raise click.ClickException(f"Configuracao invalida: {exc}") from exc
 
-    if node_override:
-        if node_override not in config.nodes:
-            raise click.ClickException(
-                f"Node '{node_override}' nao encontrado na configuracao"
-            )
-        config = config.model_copy(update={"current_node": node_override})
-
     return config
 
 
-def _create_dicom_client(config):
-    try:
-        from dicom_mcp.dicom_client import DicomClient
-    except Exception:
-        from .dicom_client import DicomClient
+def _build_search_plan(criteria, date_range: str | None):
+    study_filters = criteria.study.model_dump(exclude_none=True)
+    if date_range and "study_date" not in study_filters:
+        study_filters["study_date"] = date_range
 
-    node = config.nodes[config.current_node]
-    return DicomClient(
-        host=node.host,
-        port=node.port,
-        calling_aet=config.calling_aet,
-        called_aet=node.ae_title,
-    )
+    plan = {"query_studies": study_filters}
+    if criteria.series is not None:
+        series_filters = criteria.series.model_dump(exclude_none=True)
+        if series_filters:
+            plan["query_series"] = series_filters
 
-
-def _build_search_plan(criteria, guardrails, date_range: str | None):
-    dicom_filters: dict[str, object] = {}
-    if date_range:
-        dicom_filters["StudyDate"] = date_range
-    if criteria.patient and criteria.patient.sex:
-        dicom_filters["PatientSex"] = criteria.patient.sex
-    if criteria.study_narrowing and criteria.study_narrowing.modality_in_study:
-        dicom_filters["ModalitiesInStudy"] = criteria.study_narrowing.modality_in_study
-    if criteria.study_narrowing and criteria.study_narrowing.study_description_keywords:
-        dicom_filters["StudyDescription"] = " ".join(
-            criteria.study_narrowing.study_description_keywords
-        )
-
-    local_filters: list[str] = []
-    if criteria.patient and (
-        criteria.patient.age_min is not None or criteria.patient.age_max is not None
-    ):
-        local_filters.append("age_range")
-    if criteria.head_keywords:
-        local_filters.append("head_keywords")
-    if criteria.required_series:
-        local_filters.append("required_series")
-
-    return {
-        "dicom_filters": dicom_filters,
-        "local_filters": local_filters,
-    }
+    return {"dicom_mcp": plan}
 
 
 def _configure_logging(verbose: bool) -> logging.Logger:
@@ -101,7 +64,7 @@ def _validate_date_range(date_range: str | None) -> str | None:
     show_default=True,
     help="Arquivo de configuracao",
 )
-@click.option("--node", "-n", "node", default=None, help="Override do node DICOM")
+@click.option("--node", "-n", "node", default=None, help="Node do dicom-mcp para consulta")
 @click.option("--verbose", "-v", is_flag=True, help="Ativa logs verbosos")
 @click.option("--json", "-j", "json_output", is_flag=True, help="Saida JSON")
 @click.pass_context
@@ -128,11 +91,11 @@ def main(ctx: click.Context, config_path: Path, node: str | None, verbose: bool,
 def dry_run(ctx: click.Context, config_path_override: Path | None, query: str) -> None:
     """Parse query and show criteria without executing DICOM search."""
     config_path = str(config_path_override) if config_path_override else ctx.obj["config_path"]
-    config = _load_config(config_path, ctx.obj["node"])
+    config = _load_config(config_path)
 
     criteria = parse_nl_to_criteria(query, config.llm)
     date_range, _ = apply_guardrails(config.guardrails)
-    search_plan = _build_search_plan(criteria, config.guardrails, date_range)
+    search_plan = _build_search_plan(criteria, date_range)
 
     payload = {
         "criteria": criteria.model_dump(),
@@ -173,9 +136,16 @@ def execute(
     log = _configure_logging(ctx.obj["verbose"])
 
     try:
-        config = _load_config(ctx.obj["config_path"], ctx.obj["node"])
+        config = _load_config(ctx.obj["config_path"])
     except click.ClickException as exc:
         click.echo(f"Erro: {exc.message}", err=True)
+        ctx.exit(3)
+
+    if config.mcp is None:
+        click.echo(
+            "Erro: mcp.config_path nao configurado. Ajuste o config.yaml para o dicom-mcp.",
+            err=True,
+        )
         ctx.exit(3)
 
     try:
@@ -195,16 +165,15 @@ def execute(
         ctx.exit(3)
 
     try:
-        dicom_client = _create_dicom_client(config)
         result = execute_search(
             criteria,
-            dicom_client,
-            matching_config=config.matching,
+            mcp_config=config.mcp,
             date_range=date_range,
             max_studies=max_studies,
             unlimited=unlimited,
             guardrails_config=config.guardrails,
             logger=log,
+            node_name=ctx.obj["node"],
         )
     except Exception as exc:
         click.echo(f"Erro: {exc}", err=True)

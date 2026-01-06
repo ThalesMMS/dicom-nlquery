@@ -36,110 +36,128 @@ class MatchingConfig(BaseModel):
     synonyms: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class McpServerConfig(BaseModel):
+    command: str = "dicom-mcp"
+    config_path: str | None = None
+    args: list[str] = Field(default_factory=list)
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+
+
 class NLQueryConfig(BaseModel):
-    nodes: dict[str, DicomNodeConfig]
-    current_node: str
-    calling_aet: str
     llm: LLMConfig
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
-    matching: MatchingConfig = Field(default_factory=MatchingConfig)
+    mcp: McpServerConfig | None = None
+    nodes: dict[str, DicomNodeConfig] | None = None
+    current_node: str | None = None
+    calling_aet: str | None = None
+    matching: MatchingConfig | None = None
 
     @model_validator(mode="after")
     def validate_current_node(self) -> "NLQueryConfig":
-        if self.current_node not in self.nodes:
-            raise ValueError("current_node must exist in nodes")
+        if self.nodes and self.current_node:
+            if self.current_node not in self.nodes:
+                raise ValueError("current_node must exist in nodes")
         return self
 
 
-class PatientFilter(BaseModel):
+class StudyQuery(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    sex: str | None = None
-    age_min: int | None = None
-    age_max: int | None = None
+    patient_id: str | None = None
+    patient_sex: str | None = None
+    patient_birth_date: str | None = None
+    study_date: str | None = None
+    modality_in_study: str | None = None
+    study_description: str | None = None
+    accession_number: str | None = None
+    study_instance_uid: str | None = None
 
-    @field_validator("sex")
+    @field_validator(
+        "patient_id",
+        "patient_sex",
+        "patient_birth_date",
+        "study_date",
+        "modality_in_study",
+        "study_description",
+        "accession_number",
+        "study_instance_uid",
+    )
     @classmethod
-    def validate_sex(cls, value: str | None) -> str | None:
+    def normalize_empty(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("patient_sex")
+    @classmethod
+    def validate_patient_sex(cls, value: str | None) -> str | None:
         if value is None:
             return value
         normalized = value.strip().upper()
         if normalized not in {"F", "M", "O"}:
-            raise ValueError("sex must be 'F', 'M', or 'O'")
+            raise ValueError("patient_sex must be 'F', 'M', or 'O'")
         return normalized
 
-    @model_validator(mode="after")
-    def validate_age_range(self) -> "PatientFilter":
-        if self.age_min is not None and self.age_min < 0:
-            raise ValueError("age_min must be >= 0")
-        if self.age_max is not None and self.age_max < 0:
-            raise ValueError("age_max must be >= 0")
-        if (
-            self.age_min is not None
-            and self.age_max is not None
-            and self.age_max < self.age_min
-        ):
-            raise ValueError("age_max must be >= age_min")
-        return self
-
-
-class SeriesRequirement(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    name: str
-    modality: str | None = None
-    within_head: bool
-    all_keywords: list[str] | None = None
-    any_keywords: list[str] | None = None
-
-    @field_validator("name")
+    @field_validator("modality_in_study", mode="before")
     @classmethod
-    def validate_name(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("name cannot be empty")
+    def normalize_modalities(cls, value: str | list[str] | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return "\\".join([str(item).strip().upper() for item in value if str(item).strip()])
         return value
 
-    @model_validator(mode="after")
-    def validate_match_fields(self) -> "SeriesRequirement":
-        if not self.modality and not self.all_keywords and not self.any_keywords:
-            raise ValueError("series requirement needs modality or keywords")
-        return self
 
-
-class StudyNarrowing(BaseModel):
+class SeriesQuery(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    modality_in_study: list[str] | None = None
-    study_description_keywords: list[str] | None = None
+    modality: str | None = None
+    series_number: str | None = None
+    series_description: str | None = None
+    series_instance_uid: str | None = None
+
+    @field_validator("modality")
+    @classmethod
+    def normalize_series_modality(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip().upper()
+        return normalized or None
 
 
 class SearchCriteria(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    patient: PatientFilter | None = None
-    head_keywords: list[str] | None = None
-    required_series: list[SeriesRequirement] | None = None
-    study_narrowing: StudyNarrowing | None = None
+    study: StudyQuery
+    series: SeriesQuery | None = None
 
     @model_validator(mode="after")
     def validate_filters(self) -> "SearchCriteria":
-        has_patient = False
-        if self.patient is not None:
-            has_patient = any(
+        study_filters = any(
+            [
+                self.study.patient_id,
+                self.study.patient_sex,
+                self.study.patient_birth_date,
+                self.study.study_date,
+                self.study.modality_in_study,
+                self.study.study_description,
+                self.study.accession_number,
+                self.study.study_instance_uid,
+            ]
+        )
+        series_filters = False
+        if self.series is not None:
+            series_filters = any(
                 [
-                    self.patient.sex is not None,
-                    self.patient.age_min is not None,
-                    self.patient.age_max is not None,
+                    self.series.modality,
+                    self.series.series_number,
+                    self.series.series_description,
+                    self.series.series_instance_uid,
                 ]
             )
-        has_head = bool(self.head_keywords)
-        has_series = bool(self.required_series)
-        has_narrowing = False
-        if self.study_narrowing is not None:
-            has_narrowing = bool(self.study_narrowing.modality_in_study) or bool(
-                self.study_narrowing.study_description_keywords
-            )
-        if not (has_patient or has_head or has_series or has_narrowing):
+        if not (study_filters or series_filters):
             raise ValueError("at least one filter must be specified")
         return self
 
@@ -147,8 +165,7 @@ class SearchCriteria(BaseModel):
 class SearchStats(BaseModel):
     studies_scanned: int
     studies_matched: int
-    studies_excluded_no_age: int
-    studies_excluded_no_sex: int
+    studies_filtered_series: int
     limit_reached: bool
     execution_time_seconds: float
     date_range_applied: str

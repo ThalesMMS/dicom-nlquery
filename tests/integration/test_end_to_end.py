@@ -15,7 +15,7 @@ def test_end_to_end_female_20_40_cranio(orthanc_with_data, fake_llm_female_crani
         date_range=orthanc_with_data["date_range"],
     )
 
-    assert sorted(result.accession_numbers) == ["ACC001", "ACC002", "ACC005"]
+    assert sorted(result.accession_numbers) == ["ACC001", "ACC002", "ACC004", "ACC005"]
 
 
 @pytest.mark.integration

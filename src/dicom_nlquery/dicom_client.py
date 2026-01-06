@@ -65,6 +65,12 @@ class DicomClient:
         ds = Dataset()
         ds.QueryRetrieveLevel = "STUDY"
 
+        if kwargs.get("patient_id"):
+            ds.PatientID = kwargs["patient_id"]
+        if kwargs.get("patient_sex"):
+            ds.PatientSex = kwargs["patient_sex"]
+        if kwargs.get("patient_birth_date"):
+            ds.PatientBirthDate = kwargs["patient_birth_date"]
         if kwargs.get("study_date"):
             ds.StudyDate = kwargs["study_date"]
         if kwargs.get("modality"):
@@ -86,6 +92,12 @@ class DicomClient:
         extra = list(kwargs.get("additional_attrs") or [])
         self._apply_return_keys(ds, attrs + extra)
         return self._find(ds)
+
+    def query_studies(self, **kwargs) -> list[dict]:
+        if "modality_in_study" in kwargs and "modality" not in kwargs:
+            kwargs = {**kwargs, "modality": kwargs["modality_in_study"]}
+            kwargs.pop("modality_in_study", None)
+        return self.query_study(**kwargs)
 
     def query_series(self, study_instance_uid: str, **kwargs) -> list[dict]:
         ds = Dataset()

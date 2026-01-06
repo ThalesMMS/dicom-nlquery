@@ -3,41 +3,30 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from dicom_nlquery.models import PatientFilter, SearchCriteria, SeriesRequirement
+from dicom_nlquery.models import SearchCriteria, SeriesQuery, StudyQuery
 
 
 def test_search_criteria_requires_filters() -> None:
     with pytest.raises(ValidationError):
-        SearchCriteria()
+        SearchCriteria(study=StudyQuery())
 
 
 def test_search_criteria_accepts_patient_filter() -> None:
-    criteria = SearchCriteria(patient=PatientFilter(sex="F"))
+    criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    assert criteria.patient is not None
-    assert criteria.patient.sex == "F"
+    assert criteria.study.patient_sex == "F"
 
 
-def test_patient_filter_validates_sex() -> None:
+def test_study_query_validates_sex() -> None:
     with pytest.raises(ValidationError):
-        PatientFilter(sex="X")
+        StudyQuery(patient_sex="X")
 
 
-def test_patient_filter_validates_age_range() -> None:
-    with pytest.raises(ValidationError):
-        PatientFilter(age_min=40, age_max=20)
-
-
-def test_series_requirement_requires_match_fields() -> None:
-    with pytest.raises(ValidationError):
-        SeriesRequirement(name="cranio", within_head=True)
-
-
-def test_series_requirement_accepts_keywords() -> None:
-    requirement = SeriesRequirement(
-        name="axial t1",
-        within_head=True,
-        all_keywords=["axial", "t1"],
+def test_series_query_accepts_filters() -> None:
+    criteria = SearchCriteria(
+        study=StudyQuery(study_description="cranio"),
+        series=SeriesQuery(modality="MR", series_description="AX T1"),
     )
 
-    assert requirement.all_keywords == ["axial", "t1"]
+    assert criteria.series is not None
+    assert criteria.series.modality == "MR"

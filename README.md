@@ -1,10 +1,10 @@
 # dicom-nlquery
 
-Natural language DICOM search (PT-BR) with a deterministic filtering pipeline.
+Natural language DICOM search (PT-BR) with an LLM-driven query pipeline.
 
-This repo also contains `dicom-mcp`. You can run them side-by-side against the
-same Orthanc/PACS. `dicom-nlquery` does not depend on the `dicom-mcp` server,
-but if `dicom-mcp` is installed in the same venv it will reuse its DICOM client.
+This repo also contains `dicom-mcp`. `dicom-nlquery` delegates DICOM queries to
+the `dicom-mcp` server (stdio transport), so the LLM only builds query params and
+`dicom-mcp` executes them.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ source .venv/bin/activate
 # dicom-nlquery
 uv pip install -e ".[dev]"
 
-# optional: dicom-mcp (shared DICOM client + server tools)
+# dicom-mcp (server + tools)
 uv pip install -e ../dicom-mcp
 ```
 
@@ -42,35 +42,27 @@ dicom-nlquery execute --date-range 20190101-20210101 \
   "mulheres de 20 a 40 anos com cranio"
 ```
 
-## Run alongside dicom-mcp (optional)
+Certifique-se de que `mcp.config_path` aponta para um dicom-mcp configurado
+com o node Orthanc.
 
-Open a second terminal in the same venv and start the dicom-mcp server:
+## dicom-mcp server
 
-```bash
-cd dicom-mcp
-
-dicom-mcp tests/test_dicom_servers.yaml --transport stdio
-```
-
-Notes:
-- `dicom-nlquery` does not call the `dicom-mcp` server; it talks directly to the
-  DICOM node. Running both is useful when you want MCP tools and NL queries
-  against the same Orthanc/PACS.
-- Ensure your PACS/Orthanc allows the calling AET (`calling_aet` in config).
-  The included Orthanc test compose already allows `NLQUERY` and `TESTSCU`.
+`dicom-nlquery` spawns a `dicom-mcp` server process on demand via stdio. Ensure
+`dicom-mcp` is installed in the same venv and that `mcp.config_path` points to a
+valid dicom-mcp YAML.
 
 ## Move studies with dicom-mcp (NL query -> C-MOVE)
 
 This script parses a natural language query using dicom-nlquery and then uses
-dicom-mcp to C-MOVE the first matched study to MONAI-DEPLOY.
+dicom-mcp to C-MOVE the first matched study to a destination node.
 
 ```bash
 cd dicom-nlquery
 
 python scripts/nlquery_move_study.py \
   "mulheres de 20 a 40 anos com cranio" \
-  --host localhost --port 11112 --called-aet RADIANT \
-  --calling-aet MCPSCU --destination-ae MONAI-DEPLOY \
+  --mcp-config ../dicom-mcp/configuration.yaml \
+  --source-node orthanc --destination-node radiant \
   --date-range 20100101-20991231
 ```
 
@@ -79,16 +71,6 @@ python scripts/nlquery_move_study.py \
 Use `config.yaml` for real PACS or `config-test.yaml` for Orthanc. Example:
 
 ```yaml
-nodes:
-  orthanc:
-    host: "localhost"
-    port: 4242
-    ae_title: "ORTHANC"
-    description: "Orthanc Docker for tests"
-
-current_node: "orthanc"
-calling_aet: "NLQUERY"
-
 llm:
   provider: "ollama"
   base_url: "http://127.0.0.1:11434"
@@ -100,10 +82,9 @@ guardrails:
   study_date_range_default_days: 180
   max_studies_scanned_default: 2000
 
-matching:
-  synonyms:
-    axial: ["axial", "ax"]
-    pos: ["pos", "post"]
+mcp:
+  command: "dicom-mcp"
+  config_path: "../dicom-mcp/configuration.yaml"
 ```
 
 ## Usage
@@ -121,6 +102,8 @@ dicom-nlquery execute --date-range 20240101-20241231 "exames de 2024"
 # override node
 dicom-nlquery execute --node orthanc "todos os exames"
 ```
+
+`--node` usa o dicom-mcp para trocar o node ativo antes da consulta.
 
 ### Exit Codes
 
@@ -165,15 +148,12 @@ pytest tests/ -v
 
 ```python
 from dicom_nlquery.config import load_config
-from dicom_nlquery.dicom_client import DicomClient
 from dicom_nlquery.dicom_search import execute_search
 from dicom_nlquery.nl_parser import parse_nl_to_criteria
 
 config = load_config("config.yaml")
 criteria = parse_nl_to_criteria("mulheres de 20 a 40 anos", config.llm)
-node = config.nodes[config.current_node]
-client = DicomClient(node.host, node.port, config.calling_aet, node.ae_title)
-result = execute_search(criteria, client, matching_config=config.matching)
+result = execute_search(criteria, mcp_config=config.mcp)
 print(result.accession_numbers)
 ```
 

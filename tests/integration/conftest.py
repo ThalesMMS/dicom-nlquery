@@ -101,20 +101,30 @@ def orthanc_with_data(tmp_path_factory: pytest.TempPathFactory):
 @pytest.fixture
 def fake_llm_female_cranio() -> FakeLLMClient:
     return FakeLLMClient(
-        '{\"patient\": {\"sex\": \"F\", \"age_min\": 20, \"age_max\": 40}, '
-        '\"head_keywords\": [\"cranio\"], '
-        '\"required_series\": [], '
-        '\"study_narrowing\": {\"modality_in_study\": null, '
-        '\"study_description_keywords\": null}}'
+        '{\"study\": {'
+        '\"patient_id\": null, '
+        '\"patient_sex\": \"F\", '
+        '\"patient_birth_date\": null, '
+        '\"study_date\": null, '
+        '\"modality_in_study\": null, '
+        '\"study_description\": \"cranio\", '
+        '\"accession_number\": null, '
+        '\"study_instance_uid\": null'
+        '}, \"series\": null}'
     )
 
 
 @pytest.fixture
 def fake_llm_no_match() -> FakeLLMClient:
     return FakeLLMClient(
-        '{\"patient\": {\"sex\": \"M\", \"age_min\": 90, \"age_max\": 120}, '
-        '\"head_keywords\": [\"abdomen\"], '
-        '\"required_series\": [], '
-        '\"study_narrowing\": {\"modality_in_study\": null, '
-        '\"study_description_keywords\": null}}'
+        '{\"study\": {'
+        '\"patient_id\": null, '
+        '\"patient_sex\": \"M\", '
+        '\"patient_birth_date\": null, '
+        '\"study_date\": null, '
+        '\"modality_in_study\": null, '
+        '\"study_description\": \"abdomen\", '
+        '\"accession_number\": null, '
+        '\"study_instance_uid\": null'
+        '}, \"series\": null}'
     )
