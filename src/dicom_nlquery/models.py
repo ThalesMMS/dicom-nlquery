@@ -28,7 +28,7 @@ class LLMConfig(BaseModel):
 
 class GuardrailsConfig(BaseModel):
     study_date_range_default_days: int = 180
-    max_studies_scanned_default: int = 100
+    max_studies_scanned_default: int = 700
 
 
 class MatchingConfig(BaseModel):

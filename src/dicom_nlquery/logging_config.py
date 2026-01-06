@@ -5,6 +5,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+try:
+    from pydicom.multival import MultiValue
+    from pydicom.valuerep import PersonName
+except Exception:  # pragma: no cover - optional typing support
+    MultiValue = None
+    PersonName = None
+
 
 PHI_FIELDS = {"PatientName", "PatientID", "PatientBirthDate"}
 
@@ -18,9 +25,17 @@ def mask_phi(value: Any) -> Any:
             else:
                 masked[key] = mask_phi(item)
         return masked
-    if isinstance(value, list):
+    if MultiValue is not None and isinstance(value, MultiValue):
         return [mask_phi(item) for item in value]
-    return value
+    if isinstance(value, (list, tuple, set)):
+        return [mask_phi(item) for item in value]
+    if PersonName is not None and isinstance(value, PersonName):
+        return "***"
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 class JsonFormatter(logging.Formatter):
@@ -40,16 +55,32 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(level: str | int = "INFO") -> logging.Logger:
-    if isinstance(level, str):
-        level_value = logging.getLevelName(level.upper())
-    else:
-        level_value = level
-
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
-
+    import sys
+    
+    # Force root logger to DEBUG to capture everything for the file
+    # The 'level' argument acts as a minimum for the console if needed, 
+    # but we'll stick to fixed levels for consistency:
+    # - File: DEBUG (All logs)
+    # - Console: INFO (Clean logs)
+    
     root = logging.getLogger()
-    root.handlers = [handler]
-    root.setLevel(level_value)
+    root.setLevel(logging.DEBUG)
+
+    # Clear existing handlers
+    if root.handlers:
+        root.handlers.clear()
+
+    # 1. File Handler - JSON formatted, verbose (DEBUG)
+    file_handler = logging.FileHandler("dicom-nlquery.log")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(JsonFormatter())
+    root.addHandler(file_handler)
+
+    # 2. Console Handler - Text formatted, clean (INFO)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
+    console_handler.setFormatter(console_formatter)
+    root.addHandler(console_handler)
 
     return logging.getLogger("dicom_nlquery")

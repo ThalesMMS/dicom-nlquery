@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from pydantic import ValidationError
 
 from .llm_client import OllamaClient
-from .models import LLMConfig, SearchCriteria
+from .models import LLMConfig, SearchCriteria, StudyNarrowing
+from .normalizer import normalize
 
 
 log = logging.getLogger(__name__)
@@ -47,6 +49,51 @@ Regras:
 6. Normalize keywords para lowercase sem acentos
 7. Se a consulta menciona faixa etaria (ex: "20 a 40 anos"), use age_min e age_max
 """
+
+_MODALITY_SYNONYMS = {
+    "MR": {"rm", "mri", "ressonancia", "ressonancia magnetica"},
+    "CT": {"ct", "tc", "tomografia", "tomografia computadorizada"},
+    "US": {"us", "ultrassom", "ultrasom"},
+    "CR": {"rx", "raio x", "raiox", "radiografia"},
+}
+
+
+def _infer_modalities(query: str, criteria: SearchCriteria) -> SearchCriteria:
+    if criteria.study_narrowing and criteria.study_narrowing.modality_in_study:
+        return criteria
+
+    modalities: set[str] = set()
+    for requirement in criteria.required_series or []:
+        if requirement.modality:
+            modalities.add(requirement.modality.upper())
+
+    if not modalities:
+        normalized = normalize(query)
+        tokens = set(re.findall(r"[a-z0-9]+", normalized))
+        for modality, synonyms in _MODALITY_SYNONYMS.items():
+            for term in synonyms:
+                if " " in term:
+                    if term in normalized:
+                        modalities.add(modality)
+                        break
+                elif term in tokens:
+                    modalities.add(modality)
+                    break
+
+    if not modalities:
+        return criteria
+
+    narrowing = criteria.study_narrowing or StudyNarrowing()
+    if not narrowing.modality_in_study:
+        narrowing = narrowing.model_copy(
+            update={"modality_in_study": sorted(modalities)}
+        )
+    updated = criteria.model_copy(update={"study_narrowing": narrowing})
+    log.debug(
+        "Modalities inferred from query",
+        extra={"extra_data": {"modalities": sorted(modalities)}},
+    )
+    return updated
 
 
 def extract_json(text: str) -> dict:
@@ -111,6 +158,7 @@ def parse_nl_to_criteria(query: str, llm: LLMConfig | object) -> SearchCriteria:
         criteria = SearchCriteria.model_validate(data)
     except ValidationError:
         raise
+    criteria = _infer_modalities(query, criteria)
     log.debug(
         "NL criteria parsed",
         extra={

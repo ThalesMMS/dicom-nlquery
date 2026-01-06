@@ -21,13 +21,14 @@ import importlib.util
 import logging
 import sys
 import types
+import warnings
 from pathlib import Path
 
 from dicom_nlquery.config import load_config
 from dicom_nlquery.dicom_search import execute_search
 from dicom_nlquery.models import GuardrailsConfig, LLMConfig, MatchingConfig
 from dicom_nlquery.nl_parser import parse_nl_to_criteria
-from dicom_nlquery.logging_config import JsonFormatter, configure_logging
+from dicom_nlquery.logging_config import JsonFormatter
 
 
 def _load_dicom_mcp_client():
@@ -73,13 +74,21 @@ def _load_optional_config(path: str | None):
 
 
 def _setup_logging(verbose: bool, log_file: str | None) -> logging.Logger:
-    level = "DEBUG" if verbose else "INFO"
-    logger = configure_logging(level)
+    level = logging.DEBUG if verbose else logging.INFO
+    root = logging.getLogger()
+    root.handlers = []
+    root.setLevel(level)
+
     if log_file:
-        handler = logging.FileHandler(log_file)
+        handler = logging.FileHandler(log_file, mode="w")
         handler.setFormatter(JsonFormatter())
-        logging.getLogger().addHandler(handler)
-    return logger
+        root.addHandler(handler)
+    else:
+        handler = logging.StreamHandler()
+        handler.setFormatter(JsonFormatter())
+        root.addHandler(handler)
+
+    return logging.getLogger("dicom_nlquery")
 
 
 def main() -> int:
@@ -96,6 +105,17 @@ def main() -> int:
         "--destination-ae",
         default="MONAI-DEPLOY",
         help="Destination AE title for C-MOVE",
+    )
+    parser.add_argument(
+        "--destination-host",
+        default=None,
+        help="Destination host for post-move C-FIND verification",
+    )
+    parser.add_argument(
+        "--destination-port",
+        type=int,
+        default=None,
+        help="Destination port for post-move C-FIND verification",
     )
     parser.add_argument(
         "--date-range",
@@ -117,6 +137,11 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true", help="Enable debug logs")
     parser.add_argument("--log-file", default=None, help="Write JSON logs to file")
     parser.add_argument(
+        "--pydicom-warnings",
+        action="store_true",
+        help="Show pydicom validation warnings on stderr",
+    )
+    parser.add_argument(
         "--llm-base-url",
         default=None,
         help="Override LLM base URL (default: config or http://127.0.0.1:11434)",
@@ -128,6 +153,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if not args.pydicom_warnings:
+        warnings.filterwarnings("ignore", category=UserWarning, module="pydicom.valuerep")
+        try:
+            from pydicom import config as pydicom_config
+        except Exception:
+            pydicom_config = None
+        if pydicom_config is not None:
+            pydicom_config.settings.reading_validation_mode = pydicom_config.IGNORE
+
     logger = _setup_logging(args.verbose, args.log_file)
     logger.info(
         "Starting NL query move",
@@ -138,6 +172,8 @@ def main() -> int:
                 "called_aet": args.called_aet,
                 "calling_aet": args.calling_aet,
                 "destination_ae": args.destination_ae,
+                "destination_host": args.destination_host,
+                "destination_port": args.destination_port,
                 "date_range": args.date_range,
                 "max_studies": args.max_studies,
                 "unlimited": args.unlimited,
@@ -185,6 +221,18 @@ def main() -> int:
     except Exception as exc:
         print(f"Erro ao inicializar DICOM client: {exc}")
         return 2
+    destination_client = None
+    if args.destination_host and args.destination_port:
+        try:
+            destination_client = DicomClient(
+                host=args.destination_host,
+                port=args.destination_port,
+                calling_aet=args.calling_aet,
+                called_aet=args.destination_ae,
+            )
+        except Exception as exc:
+            print(f"Erro ao inicializar destino para verificacao: {exc}")
+            return 2
 
     try:
         result = execute_search(
@@ -214,21 +262,54 @@ def main() -> int:
         print("Nenhum estudo encontrado para mover.")
         return 1
 
-    targets = accessions if args.move_all else accessions[:1]
-    print(
-        f"Encontrados {len(accessions)} accession(s); movendo {len(targets)} estudo(s) para {args.destination_ae}."
-    )
-
-    successes = 0
-    for accession in targets:
+    study_records = []
+    selected_records = {}
+    for accession in accessions:
         studies = client.query_study(
             accession_number=accession,
-            additional_attrs=["StudyInstanceUID"],
+            additional_attrs=["StudyInstanceUID", "PatientID"],
         )
         if not studies:
             print(f"StudyInstanceUID nao encontrado para {accession}")
             continue
-        study_uid = studies[0].get("StudyInstanceUID")
+        for study in studies:
+            study_uid = study.get("StudyInstanceUID")
+            patient_id = study.get("PatientID")
+            record = {
+                "accession": accession,
+                "patient_id": patient_id,
+                "study_instance_uid": study_uid,
+            }
+            study_records.append(record)
+            if study_uid and accession not in selected_records:
+                selected_records[accession] = record
+
+    patient_accessions: dict[str | None, list[str]] = {}
+    for record in study_records:
+        patient_id = record["patient_id"]
+        accession = record["accession"]
+        patient_accessions.setdefault(patient_id, [])
+        if accession not in patient_accessions[patient_id]:
+            patient_accessions[patient_id].append(accession)
+
+    result_tuples = [(pid, accs) for pid, accs in patient_accessions.items()]
+    print("Resultados (patient_id, accession_numbers):")
+    print(result_tuples)
+
+    records = list(selected_records.values())
+    if not records:
+        print("Nenhum StudyInstanceUID encontrado para mover.")
+        return 2
+
+    targets = records if args.move_all else records[:1]
+    print(
+        f"Encontrados {len(records)} accession(s); movendo {len(targets)} estudo(s) para {args.destination_ae}."
+    )
+
+    successes = 0
+    for record in targets:
+        accession = record["accession"]
+        study_uid = record["study_instance_uid"]
         if not study_uid:
             print(f"StudyInstanceUID ausente para {accession}")
             continue
@@ -252,6 +333,42 @@ def main() -> int:
         )
         if move_result.get("success"):
             successes += 1
+
+    if destination_client:
+        verification_failed = False
+        print("Verificacao pos-move (C-FIND no destino):")
+        for record in targets:
+            accession = record["accession"]
+            study_uid = record["study_instance_uid"]
+            try:
+                if study_uid:
+                    studies = destination_client.query_study(
+                        study_instance_uid=study_uid
+                    )
+                else:
+                    studies = destination_client.query_study(
+                        accession_number=accession
+                    )
+            except Exception as exc:
+                studies = []
+                logger.warning(
+                    "Destination verification failed",
+                    extra={"extra_data": {"accession": accession, "error": str(exc)}},
+                )
+            found = bool(studies)
+            if not found:
+                verification_failed = True
+            print(f"  {accession}: {'ENCONTRADO' if found else 'NAO ENCONTRADO'}")
+        if verification_failed:
+            print(
+                "AVISO: Estudos nao encontrados no destino via C-FIND. "
+                "Verifique se o RADIANT aponta o AE de destino para o host/porta corretos."
+            )
+    else:
+        logger.info(
+            "Destination verification skipped",
+            extra={"extra_data": {"reason": "destination_host/port not provided"}},
+        )
 
     if successes == 0:
         print("Nenhum estudo foi movido com sucesso.")
