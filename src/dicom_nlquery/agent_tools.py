@@ -61,11 +61,15 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
             sex = args.get("patient_sex")
             if sex and sex not in ("F", "M"):
                 sex = None  # Ignora valores inválidos como 'O'
+            # Normaliza modalidade (MRI -> MR, etc.)
+            modality = args.get("modality", "").upper()
+            if modality == "MRI":
+                modality = "MR"
             query_args = {
                 k: v for k, v in {
                     "patient_id": args.get("patient_id"),
                     "study_date": args.get("study_date"),
-                    "modality": args.get("modality"),
+                    "modality": modality if modality else None,
                     "patient_sex": sex,
                     "study_description": args.get("study_description"),
                 }.items() if v  # Remove strings vazias e None
@@ -82,8 +86,8 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
 
         elif name == "inspect_metadata":
             uid = args.get("study_instance_uid", "").strip()
-            if not uid:
-                return json.dumps({"error": "study_instance_uid é obrigatório. Use um UID válido da busca anterior."})
+            if not uid or uid.startswith("<") or not uid[0].isdigit():
+                return json.dumps({"error": "study_instance_uid inválido. Use um UID real da busca anterior (ex: 1.2.826.0.1...)"})
             results = client.query_series(
                 study_instance_uid=uid,
                 additional_attrs=["SeriesDescription", "Modality", "BodyPartExamined"]
@@ -93,8 +97,8 @@ def execute_tool(name: str, args: Dict, client: DicomClient) -> str:
         elif name == "move_study":
             uid = args.get("study_instance_uid", "").strip()
             dest = args.get("destination_node", "").strip()
-            if not uid:
-                return json.dumps({"error": "study_instance_uid é obrigatório. Inspecione os estudos primeiro."})
+            if not uid or uid.startswith("<") or not uid[0].isdigit():
+                return json.dumps({"error": "study_instance_uid inválido. Use um UID real (ex: 1.2.826.0.1...)"})
             if not dest:
                 return json.dumps({"error": "destination_node é obrigatório."})
             result = client.move_study(
