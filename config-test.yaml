@@ -8,6 +8,32 @@ llm:
 guardrails:
   study_date_range_default_days: 365
   max_studies_scanned_default: 10
+  search_timeout_seconds: 30
+
+search_pipeline:
+  enabled: true
+  structured_first: true
+  max_attempts: 6
+  max_rewrites: 5
+  series_probe_enabled: false
+  series_probe_limit: 20
+  wildcard_modes: ["contains", "token_chain", "startswith"]
+
+lexicon:
+  path: "configs/lexicon.pt-BR.yaml"
+
+rag:
+  enable: false
+  index_path: "../pacs-rag/data/pacs_terms.sqlite"
+  top_k: 5
+  min_score: 0.2
+  provider: "hash"
+  embed_dim: 64
+
+ranking:
+  enabled: true
+  text_match_weight: 0.7
+  recency_weight: 0.3
 
 mcp:
   command: "dicom-mcp"

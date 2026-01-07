@@ -6,6 +6,7 @@ from dicom_nlquery.config import load_config
 from dicom_nlquery.dicom_client import DicomClient  # Local client with query_studies
 from dicom_nlquery.agent import DicomAgent
 from dicom_nlquery.llm_client import OllamaClient
+from dicom_nlquery.lexicon import load_lexicon
 
 # Logs simples para ver o agente "pensando"
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -38,7 +39,10 @@ def main():
 
     # 3. Inicia Agente
     llm = OllamaClient.from_config(config.llm)
-    agent = DicomAgent(llm, client)
+    lexicon = None
+    if config.lexicon is not None:
+        lexicon = load_lexicon(config.lexicon.path, config.lexicon.synonyms)
+    agent = DicomAgent(llm, client, lexicon=lexicon)
 
     print(f"🚀 Iniciando investigação para: {args.query}")
     resposta = agent.run(args.query)

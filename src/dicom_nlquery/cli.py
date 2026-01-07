@@ -12,6 +12,7 @@ from .config import load_config
 from .dicom_search import apply_guardrails, execute_search
 from .logging_config import configure_logging
 from .nl_parser import parse_nl_to_criteria
+from .rag_bridge import get_rag_suggestions
 
 
 def _load_config(config_path: str):
@@ -197,6 +198,11 @@ def execute(
             max_studies=max_studies,
             unlimited=unlimited,
             guardrails_config=config.guardrails,
+            search_pipeline_config=config.search_pipeline,
+            lexicon_config=config.lexicon,
+            rag_config=config.rag,
+            ranking_config=config.ranking,
+            rag_query=query,
             logger=log,
             node_name=ctx.obj["node"],
         )
@@ -215,5 +221,21 @@ def execute(
             click.echo(f"Estudos avaliados: {result.stats.studies_scanned}")
             if result.stats.date_range_applied:
                 click.echo(f"Data range: {result.stats.date_range_applied}")
+            if result.stats.stages_tried:
+                click.echo(
+                    "Estagios tentados: " + ", ".join(result.stats.stages_tried)
+                )
+            if result.stats.rewrites_tried:
+                shown = ", ".join(result.stats.rewrites_tried[:3])
+                click.echo(f"Reescritas tentadas: {shown}")
+            if result.stats.limit_reached:
+                click.echo(
+                    "Limite de busca atingido. Ajuste --unlimited ou max-studies."
+                )
+            if config.rag.enable:
+                suggestions = get_rag_suggestions(query, config.rag, log)
+                if suggestions:
+                    shown = ", ".join(suggestions[:3])
+                    click.echo(f"Sugestoes RAG: {shown}")
 
     ctx.exit(0 if result.accession_numbers else 1)

@@ -74,6 +74,7 @@ def test_config_applies_guardrails_defaults(tmp_path: Path) -> None:
 
     assert config.guardrails.study_date_range_default_days == 180
     assert config.guardrails.max_studies_scanned_default == 700
+    assert config.guardrails.search_timeout_seconds == 120
 
 
 def test_config_validates_llm_provider(tmp_path: Path) -> None:

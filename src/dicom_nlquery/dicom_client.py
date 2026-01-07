@@ -99,6 +99,9 @@ class DicomClient:
 
         attrs = [
             "StudyInstanceUID",
+            "PatientID",
+            "PatientSex",
+            "PatientBirthDate",
             "StudyDate",
             "StudyDescription",
             "AccessionNumber",

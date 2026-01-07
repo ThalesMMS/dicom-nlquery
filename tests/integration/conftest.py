@@ -128,3 +128,35 @@ def fake_llm_no_match() -> FakeLLMClient:
         '\"study_instance_uid\": null'
         '}, \"series\": null}'
     )
+
+
+@pytest.fixture
+def fake_llm_feto() -> FakeLLMClient:
+    return FakeLLMClient(
+        '{\"study\": {'
+        '\"patient_id\": null, '
+        '\"patient_sex\": null, '
+        '\"patient_birth_date\": null, '
+        '\"study_date\": null, '
+        '\"modality_in_study\": \"MR\", '
+        '\"study_description\": \"feto\", '
+        '\"accession_number\": null, '
+        '\"study_instance_uid\": null'
+        '}, \"series\": null}'
+    )
+
+
+@pytest.fixture
+def fake_llm_fetal() -> FakeLLMClient:
+    return FakeLLMClient(
+        '{\"study\": {'
+        '\"patient_id\": null, '
+        '\"patient_sex\": null, '
+        '\"patient_birth_date\": null, '
+        '\"study_date\": null, '
+        '\"modality_in_study\": \"MR\", '
+        '\"study_description\": \"fetal\", '
+        '\"accession_number\": null, '
+        '\"study_instance_uid\": null'
+        '}, \"series\": null}'
+    )

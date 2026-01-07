@@ -34,7 +34,7 @@ def test_cli_dry_run_outputs_json(monkeypatch, tmp_path: Path) -> None:
         study=StudyQuery(patient_sex="F", study_description="cranio"),
     )
 
-    def fake_parse(_query, _llm):
+    def fake_parse(_query, _llm, **_kwargs):
         return criteria
 
     def fail_execute(*_args, **_kwargs):
@@ -61,7 +61,7 @@ def test_cli_json_flag_output_format(monkeypatch, tmp_path: Path) -> None:
     runner = CliRunner()
     criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    def fake_parse(_query, _llm):
+    def fake_parse(_query, _llm, **_kwargs):
         return criteria
 
     monkeypatch.setattr(cli_module, "parse_nl_to_criteria", fake_parse)
@@ -86,6 +86,9 @@ def _fake_result(accessions: list[str]) -> SearchResult:
         limit_reached=False,
         execution_time_seconds=1.0,
         date_range_applied="20200101-20201231",
+        attempts_run=1,
+        successful_stage="direct",
+        rewrites_tried=[],
     )
     return SearchResult(accession_numbers=accessions, stats=stats)
 
@@ -95,7 +98,7 @@ def test_cli_execute_returns_accessions(monkeypatch, tmp_path: Path) -> None:
     runner = CliRunner()
     criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    def fake_parse(_query, _llm):
+    def fake_parse(_query, _llm, **_kwargs):
         return criteria
 
     def fake_execute(*_args, **_kwargs):
@@ -118,7 +121,7 @@ def test_cli_execute_no_results_exits_1(monkeypatch, tmp_path: Path) -> None:
     runner = CliRunner()
     criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    monkeypatch.setattr(cli_module, "parse_nl_to_criteria", lambda _q, _l: criteria)
+    monkeypatch.setattr(cli_module, "parse_nl_to_criteria", lambda _q, _l, **_k: criteria)
     monkeypatch.setattr(cli_module, "execute_search", lambda *_a, **_k: _fake_result([]))
 
     result = runner.invoke(
@@ -144,7 +147,7 @@ def test_cli_execute_dicom_error_exits_2(monkeypatch, tmp_path: Path) -> None:
     runner = CliRunner()
     criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    monkeypatch.setattr(cli_module, "parse_nl_to_criteria", lambda _q, _l: criteria)
+    monkeypatch.setattr(cli_module, "parse_nl_to_criteria", lambda _q, _l, **_k: criteria)
 
     def fake_execute(*_args, **_kwargs):
         raise RuntimeError("dicom failure")
@@ -163,7 +166,7 @@ def test_cli_execute_json_output(monkeypatch, tmp_path: Path) -> None:
     runner = CliRunner()
     criteria = SearchCriteria(study=StudyQuery(patient_sex="F"))
 
-    monkeypatch.setattr(cli_module, "parse_nl_to_criteria", lambda _q, _l: criteria)
+    monkeypatch.setattr(cli_module, "parse_nl_to_criteria", lambda _q, _l, **_k: criteria)
     monkeypatch.setattr(cli_module, "execute_search", lambda *_a, **_k: _fake_result(["ACC100"]))
 
     result = runner.invoke(

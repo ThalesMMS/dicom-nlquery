@@ -430,6 +430,8 @@ def parse_nl_to_criteria(
             criteria.study.study_date = _normalize_study_date(criteria.study.study_date)
         else:
             criteria.study.study_date = None
+    if criteria.study.study_description:
+        criteria.study.study_description = _normalize_text(criteria.study.study_description)
     if debug:
         log.info(
             "NL criteria resolved",

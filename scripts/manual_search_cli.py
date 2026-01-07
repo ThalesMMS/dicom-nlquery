@@ -43,6 +43,11 @@ def main() -> None:
         criteria,
         mcp_config=config.mcp,
         guardrails_config=config.guardrails,
+        search_pipeline_config=config.search_pipeline,
+        lexicon_config=config.lexicon,
+        rag_config=config.rag,
+        ranking_config=config.ranking,
+        rag_query=args.query,
     )
 
     print(f"Estudos encontrados: {len(result.accession_numbers)}")

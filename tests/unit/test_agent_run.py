@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dicom_nlquery.agent import DicomAgent
+from dicom_nlquery.lexicon import Lexicon
 
 
 class FakeClient:
@@ -236,6 +237,34 @@ def test_evidence_check_blocks_unmentioned_sex_filter() -> None:
     assert "ERRO DE PROTOCOLO" in response
     assert "patient_sex" in response
     assert client.calls == []
+
+
+def test_evidence_check_allows_lexicon_synonym() -> None:
+    client = FakeClient()
+    llm = FakeLLM(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "query_studies",
+                            "arguments": {"study_description": "fetal"},
+                        }
+                    }
+                ],
+                "content": "",
+            }
+        ]
+    )
+    lexicon = Lexicon()
+    lexicon.update({"feto": ["fetal"]})
+    agent = DicomAgent(llm, client, max_steps=1, lexicon=lexicon)
+
+    response = agent.run("Buscar RM de feto")
+
+    assert "ERRO DE PROTOCOLO" not in response
+    assert client.calls
 
 
 def test_move_without_search_blocked() -> None:

@@ -15,6 +15,8 @@ def load_config(path: str | Path) -> NLQueryConfig:
     data = raw or {}
     config = NLQueryConfig.model_validate(data)
     config = _resolve_mcp_config(config, config_path)
+    config = _resolve_lexicon_config(config, config_path)
+    config = _resolve_rag_config(config, config_path)
     log.debug("Config loaded", extra={"extra_data": {"path": str(config_path)}})
     return config
 
@@ -30,6 +32,26 @@ def _resolve_mcp_config(config: NLQueryConfig, config_path: Path) -> NLQueryConf
         mcp = _resolve_mcp_paths(mcp, config_path.parent)
 
     return config.model_copy(update={"mcp": mcp})
+
+
+def _resolve_lexicon_config(config: NLQueryConfig, config_path: Path) -> NLQueryConfig:
+    lexicon = config.lexicon
+    if lexicon is None or not lexicon.path:
+        return config
+    resolved = str(_resolve_path(config_path.parent, lexicon.path))
+    if resolved == lexicon.path:
+        return config
+    return config.model_copy(update={"lexicon": lexicon.model_copy(update={"path": resolved})})
+
+
+def _resolve_rag_config(config: NLQueryConfig, config_path: Path) -> NLQueryConfig:
+    rag = config.rag
+    if rag is None or not rag.index_path:
+        return config
+    resolved = str(_resolve_path(config_path.parent, rag.index_path))
+    if resolved == rag.index_path:
+        return config
+    return config.model_copy(update={"rag": rag.model_copy(update={"index_path": resolved})})
 
 
 def _resolve_mcp_paths(mcp: McpServerConfig, base_dir: Path) -> McpServerConfig:

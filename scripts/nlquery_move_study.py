@@ -382,6 +382,11 @@ def main() -> int:
             max_studies=args.max_studies,
             unlimited=args.unlimited,
             guardrails_config=guardrails_config,
+            search_pipeline_config=config.search_pipeline,
+            lexicon_config=config.lexicon,
+            rag_config=config.rag,
+            ranking_config=config.ranking,
+            rag_query=args.query,
             logger=logger,
             node_name=source_node,
         )

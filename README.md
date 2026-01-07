@@ -99,11 +99,81 @@ llm:
 guardrails:
   study_date_range_default_days: 180
   max_studies_scanned_default: 2000
+  search_timeout_seconds: 120
+
+search_pipeline:
+  enabled: true
+  structured_first: true
+  max_attempts: 12
+  max_rewrites: 10
+  series_probe_enabled: false
+  series_probe_limit: 50
+  wildcard_modes: ["contains", "token_chain", "startswith"]
+
+lexicon:
+  path: "configs/lexicon.pt-BR.yaml"
+
+rag:
+  enable: false
+  index_path: "../pacs-rag/data/pacs_terms.sqlite"
+  top_k: 10
+  min_score: 0.2
+  provider: "hash"
+  embed_dim: 64
+
+ranking:
+  enabled: true
+  text_match_weight: 0.7
+  recency_weight: 0.3
 
 mcp:
   command: "dicom-mcp"
   config_path: "../dicom-mcp/configuration.yaml"
 ```
+
+## Search Pipeline Guide
+
+The pipeline is deterministic and bounded to avoid query explosions while still
+handling lexical variation (ex.: "feto" vs "fetal"). Stages run in order until
+results are found or guardrails stop further attempts.
+
+1) **Structured-first**
+- Sends `query_studies` with structured filters (sex/date/modality/IDs) but no
+  description constraint.
+- Applies **lexicon-aware local matching** on `StudyDescription` and optionally
+  probes series (when `series_probe_enabled=true`).
+
+2) **Wildcards**
+- Tries deterministic wildcard patterns for the original description:
+  `*term*`, `*t1*t2*`, `term*`, and optional headword.
+
+3) **Lexicon rewrites (beam-limited)**
+- Expands tokens using the lexicon and generates bounded candidates via a
+  beam-style search (`max_rewrites`).
+- Keeps ordering deterministic and avoids combinatorial blow-ups.
+
+4) **RAG rewrites (optional)**
+- If enabled, `pacs-rag` suggests real PACS terms; each suggestion is tried as a
+  wildcard description.
+- Suggestions are cached (LRU) to reduce repeated embedding calls.
+
+## Guardrails & Ranking Decisions
+
+- **Guardrails**: default date range + max studies scanned + total time budget.
+  `--unlimited` removes the scan cap but logs a warning.
+- **Ranking**: results are ordered by text match overlap and recency (weights
+  configurable via `ranking`).
+- **No inferred clinical filters**: only explicit fields are used; lexicon/RAG
+  only influence text matching and rewrites.
+
+## Observability
+
+`SearchStats` includes:
+- `attempts_run`, `successful_stage`, `rewrites_tried`, `stages_tried`
+- `studies_scanned`, `studies_matched`, `limit_reached`, `execution_time_seconds`
+
+CLI prints stage/rewrites when no results are found; JSON output always includes
+full stats.
 
 ## Usage
 
@@ -152,6 +222,41 @@ docker compose -f tests/docker-compose.yml down
 # full suite
 pytest tests/ -v
 ```
+
+## PACS Lexicon & RAG
+
+`pacs-rag` can ingest real PACS terminology into a local SQLite index and export
+a starter lexicon file for manual curation.
+
+```bash
+# build or update the index (requires a configured MCP server)
+cd pacs-rag
+uv run --with-editable '.[dev,mcp]' -- pacs-rag ingest-mcp \
+  --mcp-command dicom-mcp \
+  --config-path ../dicom-mcp/configuration.yaml \
+  --index data/pacs_terms.sqlite \
+  --study-date 20240101-20241231
+
+# export a lexicon skeleton (review and add synonyms)
+uv run --with-editable '.[dev]' -- pacs-rag export-lexicon \
+  --index data/pacs_terms.sqlite \
+  --output ../dicom-nlquery/configs/lexicon.generated.yaml \
+  --min-count 2
+```
+
+Then point `lexicon.path` to the generated file and keep RAG optional:
+
+```yaml
+lexicon:
+  path: "configs/lexicon.generated.yaml"
+rag:
+  enable: true
+```
+
+The generated YAML includes:
+- `synonyms`: empty buckets for manual synonym curation
+- `ngrams`: frequent bi-grams across PACS descriptions
+- `clusters`: simple term clusters based on token overlap (review and edit)
 
 ## Troubleshooting
 

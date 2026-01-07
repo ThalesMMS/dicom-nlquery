@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .agent_tools import execute_tool, get_tools_schema
+from .lexicon import Lexicon, normalize_text as lexicon_normalize_text
 from .llm_client import OllamaClient
 from .models import AgentPhase, AgentState, QueryStudiesArgs, ToolName, ToolResult
 
@@ -116,7 +117,12 @@ def _normalize_text(text: str) -> str:
     return "".join(c for c in normalized if not unicodedata.combining(c)).lower()
 
 
-def _has_evidence_for_filter(field: str, value: str, query: str) -> bool:
+def _has_evidence_for_filter(
+    field: str,
+    value: str,
+    query: str,
+    lexicon: Lexicon | None = None,
+) -> bool:
     query_norm = _normalize_text(query)
     value_norm = _normalize_text(value)
 
@@ -138,7 +144,16 @@ def _has_evidence_for_filter(field: str, value: str, query: str) -> bool:
     if field == "study_description":
         stripped = value_norm.replace("*", " ")
         tokens = [token for token in stripped.split() if len(token) >= 3]
-        return any(token in query_norm for token in tokens)
+        if any(token in query_norm for token in tokens):
+            return True
+        if lexicon:
+            query_lex = lexicon_normalize_text(query)
+            for token in tokens:
+                for expansion in lexicon.expand(token):
+                    expansion_norm = lexicon_normalize_text(expansion)
+                    if expansion_norm and expansion_norm in query_lex:
+                        return True
+        return False
 
     if field == "patient_name":
         stripped = value_norm.replace("^", " ").replace("*", " ")
@@ -152,6 +167,7 @@ def _validate_search_evidence(
     args: QueryStudiesArgs,
     query: str,
     guardrail_date_range: str | None,
+    lexicon: Lexicon | None = None,
 ) -> str | None:
     for field, value in args.model_dump(exclude_none=True).items():
         if not isinstance(value, str):
@@ -159,16 +175,23 @@ def _validate_search_evidence(
         if field == "study_date":
             if guardrail_date_range and value == guardrail_date_range:
                 continue
-        if not _has_evidence_for_filter(field, value, query):
+        if not _has_evidence_for_filter(field, value, query, lexicon=lexicon):
             return field
     return None
 
 
 class DicomAgent:
-    def __init__(self, llm: OllamaClient, dicom_client: Any, max_steps: int = MAX_STEPS) -> None:
+    def __init__(
+        self,
+        llm: OllamaClient,
+        dicom_client: Any,
+        max_steps: int = MAX_STEPS,
+        lexicon: Lexicon | None = None,
+    ) -> None:
         self.llm = llm
         self.client = dicom_client
         self.max_steps = max_steps
+        self._lexicon = lexicon
         self.state = AgentState()
         self.history = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._user_query: str | None = None
@@ -323,6 +346,7 @@ class DicomAgent:
                         parsed,
                         self._user_query,
                         self.state.guardrail_date_range,
+                        self._lexicon,
                     )
                     if invalid_field:
                         return _protocol_error(

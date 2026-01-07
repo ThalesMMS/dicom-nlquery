@@ -1,0 +1,657 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from difflib import SequenceMatcher
+import logging
+import time
+from typing import Iterable
+
+from .logging_config import mask_phi
+from .lexicon import Lexicon, normalize_text
+from .models import RankingConfig, SearchCriteria, SearchPipelineConfig, SearchResult, SearchStats
+from .search_utils import (
+    _build_series_args,
+    _build_study_args,
+    _get_attr,
+    _has_series_filters,
+    _series_matches_criteria,
+    _study_matches_criteria,
+)
+
+
+@dataclass(frozen=True)
+class SearchAttempt:
+    stage: str
+    study_args: dict[str, object]
+    description_override: str | None = None
+    use_lexicon_match: bool = False
+    allow_series_probe: bool = False
+    rewrite: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class RewriteCandidate:
+    text: str
+    source: str
+    score: float
+
+
+def _wildcard_patterns(text: str, modes: Iterable[str]) -> list[str]:
+    if not text:
+        return []
+    if "*" in text or "?" in text:
+        return [text]
+    cleaned = " ".join(text.split())
+    tokens = [token for token in cleaned.split() if token]
+    patterns: list[str] = []
+    if "contains" in modes:
+        patterns.append(f"*{cleaned}*")
+    if "token_chain" in modes and len(tokens) > 1:
+        patterns.append("*" + "*".join(tokens) + "*")
+    if "startswith" in modes:
+        patterns.append(f"{cleaned}*")
+    if "headword" in modes and tokens:
+        patterns.append(f"*{tokens[0]}*")
+    return patterns
+
+
+def _dedupe_attempts(attempts: list[SearchAttempt]) -> list[SearchAttempt]:
+    seen: set[tuple[str, tuple[tuple[str, object], ...], str | None, bool]] = set()
+    result: list[SearchAttempt] = []
+    for attempt in attempts:
+        key = (
+            attempt.stage,
+            tuple(sorted(attempt.study_args.items())),
+            attempt.description_override,
+            attempt.use_lexicon_match,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(attempt)
+    return result
+
+
+def build_attempts(
+    criteria: SearchCriteria,
+    study_date: str | None,
+    config: SearchPipelineConfig,
+    lexicon: Lexicon | None,
+    rag_suggestions: list[str] | None = None,
+) -> list[SearchAttempt]:
+    base_args = _build_study_args(criteria, study_date)
+    description = criteria.study.study_description
+    if not config.enabled:
+        return [SearchAttempt(stage="direct", study_args=base_args, reason="disabled")]
+
+    attempts: list[SearchAttempt] = []
+    if description:
+        if config.structured_first:
+            structured_args = _build_study_args(
+                criteria,
+                study_date,
+                include_description=False,
+            )
+            attempts.append(
+                SearchAttempt(
+                    stage="structured-first",
+                    study_args=structured_args,
+                    description_override=description,
+                    use_lexicon_match=bool(lexicon),
+                    allow_series_probe=config.series_probe_enabled,
+                    reason="structured-first",
+                )
+            )
+
+        for pattern in _wildcard_patterns(description, config.wildcard_modes):
+            wildcard_args = _build_study_args(
+                criteria,
+                study_date,
+                study_description_override=pattern,
+            )
+            attempts.append(
+                SearchAttempt(
+                    stage="wildcard",
+                    study_args=wildcard_args,
+                    description_override=pattern,
+                    use_lexicon_match=bool(lexicon),
+                    reason="wildcard",
+                )
+            )
+
+        rewrite_candidates: dict[str, RewriteCandidate] = {}
+        if lexicon is not None and config.max_rewrites != 0:
+            max_candidates = config.max_rewrites if config.max_rewrites > 0 else None
+            rewrites = lexicon.expand_text(description, max_candidates=max_candidates)
+            for rewrite in rewrites:
+                _add_candidate(rewrite_candidates, description, rewrite, "lexicon")
+        if rag_suggestions:
+            for suggestion in rag_suggestions:
+                _add_candidate(rewrite_candidates, description, suggestion, "rag")
+
+        ranked_candidates = sorted(
+            rewrite_candidates.values(),
+            key=lambda item: (-item.score, item.text),
+        )
+        max_rewrites = config.max_rewrites if config.max_rewrites > 0 else None
+        if max_rewrites is not None:
+            ranked_candidates = ranked_candidates[:max_rewrites]
+
+        for candidate in ranked_candidates:
+            for pattern in _wildcard_patterns(candidate.text, config.wildcard_modes):
+                rewrite_args = _build_study_args(
+                    criteria,
+                    study_date,
+                    study_description_override=pattern,
+                )
+                attempts.append(
+                    SearchAttempt(
+                        stage="rag" if candidate.source == "rag" else "rewrite",
+                        study_args=rewrite_args,
+                        description_override=pattern,
+                        use_lexicon_match=bool(lexicon),
+                        rewrite=candidate.text,
+                        reason=candidate.source,
+                    )
+                )
+    else:
+        attempts.append(SearchAttempt(stage="direct", study_args=base_args, reason="no-description"))
+
+    attempts = _dedupe_attempts(attempts)
+    if config.max_attempts and len(attempts) > config.max_attempts:
+        attempts = attempts[: config.max_attempts]
+    return attempts
+
+
+def _record_rewrite(stats: SearchStats, rewrite: str | None) -> None:
+    if not rewrite:
+        return
+    if rewrite in stats.rewrites_tried:
+        return
+    stats.rewrites_tried.append(rewrite)
+
+
+def _record_stage(stats: SearchStats, stage: str) -> None:
+    if stage in stats.stages_tried:
+        return
+    stats.stages_tried.append(stage)
+
+
+def run_pipeline_sync(
+    criteria: SearchCriteria,
+    query_client: object,
+    study_date: str | None,
+    explicit_study_date: str | None,
+    max_studies: int | None,
+    config: SearchPipelineConfig,
+    lexicon: Lexicon | None,
+    rag_suggestions: list[str] | None,
+    ranking: RankingConfig,
+    timeout_seconds: int | None,
+    log: logging.Logger,
+    start_time: float,
+) -> SearchResult:
+    query_studies = getattr(query_client, "query_studies", None) or getattr(
+        query_client, "query_study"
+    )
+    if query_studies is None:
+        raise RuntimeError("query_client lacks query_studies/query_study")
+
+    query_series = getattr(query_client, "query_series", None)
+
+    attempts = build_attempts(criteria, study_date, config, lexicon, rag_suggestions)
+    stats = SearchStats(
+        studies_scanned=0,
+        studies_matched=0,
+        studies_filtered_series=0,
+        limit_reached=False,
+        execution_time_seconds=0.0,
+        date_range_applied=study_date or "",
+        attempts_run=0,
+        successful_stage=None,
+        rewrites_tried=[],
+    )
+    accession_numbers: list[str] = []
+    seen_uids: set[str] = set()
+    has_series_filters = _has_series_filters(criteria)
+    series_args = _build_series_args(criteria)
+    original_description = criteria.study.study_description
+
+    deadline = _deadline_from_timeout(start_time, timeout_seconds)
+    for attempt in attempts:
+        if _deadline_reached(deadline):
+            stats.limit_reached = True
+            log.warning("AVISO: Tempo limite da busca atingido.")
+            break
+        stats.attempts_run += 1
+        _record_stage(stats, attempt.stage)
+        _record_rewrite(stats, attempt.rewrite)
+        studies = list(query_studies(**attempt.study_args))
+        scanned_this_attempt = 0
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "C-FIND studies returned",
+                extra={
+                    "extra_data": {
+                        "count": len(studies),
+                        "stage": attempt.stage,
+                    }
+                },
+            )
+
+        attempt_matches: list[tuple[object, str]] = []
+        for study in studies:
+            if _deadline_reached(deadline):
+                stats.limit_reached = True
+                log.warning("AVISO: Tempo limite da busca atingido.")
+                break
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug("Study candidate", extra={"extra_data": mask_phi(study)})
+            if max_studies is not None and stats.studies_scanned >= max_studies:
+                stats.limit_reached = True
+                remaining = max(len(studies) - scanned_this_attempt, 0)
+                log.warning(
+                    "AVISO: Limite de %s estudos atingido. %s estudos adicionais nao foram avaliados.",
+                    max_studies,
+                    remaining,
+                )
+                break
+            stats.studies_scanned += 1
+            scanned_this_attempt += 1
+
+            description_matcher = None
+            if attempt.use_lexicon_match and lexicon and original_description:
+                description_matcher = lambda item: lexicon.match_text(
+                    original_description,
+                    str(_get_attr(item, "StudyDescription") or ""),
+                )
+            matches_study = _study_matches_criteria(
+                study,
+                criteria,
+                explicit_study_date,
+                description_override=attempt.description_override,
+                description_matcher=description_matcher,
+            )
+            if not matches_study:
+                if not (attempt.allow_series_probe and config.series_probe_enabled):
+                    continue
+                if not _study_matches_criteria(
+                    study,
+                    criteria,
+                    explicit_study_date,
+                    description_override=attempt.description_override,
+                    description_matcher=description_matcher,
+                    skip_description=True,
+                ):
+                    continue
+                study_uid = _get_attr(study, "StudyInstanceUID")
+                if not study_uid:
+                    stats.studies_filtered_series += 1
+                    continue
+                if query_series is None:
+                    raise RuntimeError("query_client lacks query_series()")
+                if config.series_probe_limit <= 0:
+                    continue
+                series_list = list(query_series(study_instance_uid=study_uid))
+                if not series_list:
+                    stats.studies_filtered_series += 1
+                    continue
+                series_match = False
+                for item in series_list[: config.series_probe_limit]:
+                    if lexicon and original_description:
+                        if lexicon.match_text(
+                            original_description,
+                            str(_get_attr(item, "SeriesDescription") or ""),
+                        ):
+                            series_match = True
+                            break
+                        if lexicon.match_text(
+                            original_description,
+                            str(_get_attr(item, "BodyPartExamined") or ""),
+                        ):
+                            series_match = True
+                            break
+                    elif attempt.description_override:
+                        if _get_attr(item, "SeriesDescription") and attempt.description_override:
+                            if attempt.description_override.strip("*") in str(
+                                _get_attr(item, "SeriesDescription")
+                            ):
+                                series_match = True
+                                break
+                if not series_match:
+                    stats.studies_filtered_series += 1
+                    continue
+                matches_study = True
+            if not matches_study:
+                continue
+
+            if has_series_filters:
+                if query_series is None:
+                    raise RuntimeError("query_client lacks query_series()")
+                study_uid = _get_attr(study, "StudyInstanceUID")
+                if not study_uid:
+                    stats.studies_filtered_series += 1
+                    continue
+                series_list = list(query_series(study_instance_uid=study_uid, **series_args))
+                if not series_list or not any(
+                    _series_matches_criteria(item, criteria) for item in series_list
+                ):
+                    stats.studies_filtered_series += 1
+                    continue
+
+            study_uid = _get_attr(study, "StudyInstanceUID")
+            if study_uid and study_uid in seen_uids:
+                continue
+            if study_uid:
+                seen_uids.add(str(study_uid))
+            stats.studies_matched += 1
+            accession = _get_attr(study, "AccessionNumber")
+            if accession:
+                attempt_matches.append((study, str(accession)))
+
+        if attempt_matches:
+            accession_numbers = _rank_accessions(
+                attempt_matches,
+                criteria.study.study_description or attempt.description_override,
+                ranking,
+            )
+            stats.successful_stage = attempt.stage
+            break
+
+        if stats.limit_reached:
+            break
+
+    stats.execution_time_seconds = time.time() - start_time
+    log.info("DICOM search completed", extra={"extra_data": stats.model_dump()})
+    return SearchResult(accession_numbers=accession_numbers, stats=stats)
+
+
+async def run_pipeline_async(
+    criteria: SearchCriteria,
+    query_client: object,
+    study_date: str | None,
+    explicit_study_date: str | None,
+    max_studies: int | None,
+    config: SearchPipelineConfig,
+    lexicon: Lexicon | None,
+    rag_suggestions: list[str] | None,
+    ranking: RankingConfig,
+    timeout_seconds: int | None,
+    log: logging.Logger,
+    start_time: float,
+) -> SearchResult:
+    attempts = build_attempts(criteria, study_date, config, lexicon, rag_suggestions)
+    stats = SearchStats(
+        studies_scanned=0,
+        studies_matched=0,
+        studies_filtered_series=0,
+        limit_reached=False,
+        execution_time_seconds=0.0,
+        date_range_applied=study_date or "",
+        attempts_run=0,
+        successful_stage=None,
+        rewrites_tried=[],
+    )
+    accession_numbers: list[str] = []
+    seen_uids: set[str] = set()
+    has_series_filters = _has_series_filters(criteria)
+    series_args = _build_series_args(criteria)
+    original_description = criteria.study.study_description
+
+    deadline = _deadline_from_timeout(start_time, timeout_seconds)
+    for attempt in attempts:
+        if _deadline_reached(deadline):
+            stats.limit_reached = True
+            log.warning("AVISO: Tempo limite da busca atingido.")
+            break
+        stats.attempts_run += 1
+        _record_stage(stats, attempt.stage)
+        _record_rewrite(stats, attempt.rewrite)
+        studies = list(await query_client.query_studies(**attempt.study_args))
+        scanned_this_attempt = 0
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "C-FIND studies returned",
+                extra={
+                    "extra_data": {
+                        "count": len(studies),
+                        "stage": attempt.stage,
+                    }
+                },
+            )
+
+        attempt_matches: list[tuple[object, str]] = []
+        for study in studies:
+            if _deadline_reached(deadline):
+                stats.limit_reached = True
+                log.warning("AVISO: Tempo limite da busca atingido.")
+                break
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug("Study candidate", extra={"extra_data": mask_phi(study)})
+            if max_studies is not None and stats.studies_scanned >= max_studies:
+                stats.limit_reached = True
+                remaining = max(len(studies) - scanned_this_attempt, 0)
+                log.warning(
+                    "AVISO: Limite de %s estudos atingido. %s estudos adicionais nao foram avaliados.",
+                    max_studies,
+                    remaining,
+                )
+                break
+            stats.studies_scanned += 1
+            scanned_this_attempt += 1
+
+            description_matcher = None
+            if attempt.use_lexicon_match and lexicon and original_description:
+                description_matcher = lambda item: lexicon.match_text(
+                    original_description,
+                    str(_get_attr(item, "StudyDescription") or ""),
+                )
+            matches_study = _study_matches_criteria(
+                study,
+                criteria,
+                explicit_study_date,
+                description_override=attempt.description_override,
+                description_matcher=description_matcher,
+            )
+            if not matches_study:
+                if not (attempt.allow_series_probe and config.series_probe_enabled):
+                    continue
+                if not _study_matches_criteria(
+                    study,
+                    criteria,
+                    explicit_study_date,
+                    description_override=attempt.description_override,
+                    description_matcher=description_matcher,
+                    skip_description=True,
+                ):
+                    continue
+                study_uid = _get_attr(study, "StudyInstanceUID")
+                if not study_uid:
+                    stats.studies_filtered_series += 1
+                    continue
+                if config.series_probe_limit <= 0:
+                    continue
+                series_list = list(
+                    await query_client.query_series(
+                        study_instance_uid=study_uid,
+                    )
+                )
+                if not series_list:
+                    stats.studies_filtered_series += 1
+                    continue
+                series_match = False
+                for item in series_list[: config.series_probe_limit]:
+                    if lexicon and original_description:
+                        if lexicon.match_text(
+                            original_description,
+                            str(_get_attr(item, "SeriesDescription") or ""),
+                        ):
+                            series_match = True
+                            break
+                        if lexicon.match_text(
+                            original_description,
+                            str(_get_attr(item, "BodyPartExamined") or ""),
+                        ):
+                            series_match = True
+                            break
+                    elif attempt.description_override:
+                        if _get_attr(item, "SeriesDescription") and attempt.description_override:
+                            if attempt.description_override.strip("*") in str(
+                                _get_attr(item, "SeriesDescription")
+                            ):
+                                series_match = True
+                                break
+                if not series_match:
+                    stats.studies_filtered_series += 1
+                    continue
+                matches_study = True
+            if not matches_study:
+                continue
+
+            if has_series_filters:
+                study_uid = _get_attr(study, "StudyInstanceUID")
+                if not study_uid:
+                    stats.studies_filtered_series += 1
+                    continue
+                series_list = list(
+                    await query_client.query_series(
+                        study_instance_uid=study_uid,
+                        **series_args,
+                    )
+                )
+                if not series_list or not any(
+                    _series_matches_criteria(item, criteria) for item in series_list
+                ):
+                    stats.studies_filtered_series += 1
+                    continue
+
+            study_uid = _get_attr(study, "StudyInstanceUID")
+            if study_uid and study_uid in seen_uids:
+                continue
+            if study_uid:
+                seen_uids.add(str(study_uid))
+            stats.studies_matched += 1
+            accession = _get_attr(study, "AccessionNumber")
+            if accession:
+                attempt_matches.append((study, str(accession)))
+
+        if attempt_matches:
+            accession_numbers = _rank_accessions(
+                attempt_matches,
+                criteria.study.study_description or attempt.description_override,
+                ranking,
+            )
+            stats.successful_stage = attempt.stage
+            break
+
+        if stats.limit_reached:
+            break
+
+    stats.execution_time_seconds = time.time() - start_time
+    log.info("DICOM search completed", extra={"extra_data": stats.model_dump()})
+    return SearchResult(accession_numbers=accession_numbers, stats=stats)
+
+
+def _score_similarity(original: str, candidate: str) -> float:
+    if not original or not candidate:
+        return 0.0
+    original_norm = normalize_text(original)
+    candidate_norm = normalize_text(candidate)
+    if not original_norm or not candidate_norm:
+        return 0.0
+    ratio = SequenceMatcher(None, original_norm, candidate_norm).ratio()
+    original_tokens = set(original_norm.split())
+    candidate_tokens = set(candidate_norm.split())
+    if not original_tokens or not candidate_tokens:
+        return ratio
+    overlap = len(original_tokens & candidate_tokens)
+    union = len(original_tokens | candidate_tokens)
+    jaccard = overlap / union if union else 0.0
+    return max(ratio, jaccard)
+
+
+def _add_candidate(
+    candidates: dict[str, RewriteCandidate],
+    original: str,
+    candidate: str,
+    source: str,
+) -> None:
+    if normalize_text(candidate) == normalize_text(original):
+        return
+    score = _score_similarity(original, candidate)
+    existing = candidates.get(candidate)
+    if existing is None or score > existing.score:
+        candidates[candidate] = RewriteCandidate(text=candidate, source=source, score=score)
+
+
+def _rank_accessions(
+    matches: list[tuple[object, str]],
+    query_text: str | None,
+    ranking: RankingConfig,
+) -> list[str]:
+    if not ranking.enabled:
+        return _dedupe_accessions(matches)
+    query = query_text or ""
+    today = date.today()
+    scored: list[tuple[float, str]] = []
+    for study, accession in matches:
+        description = str(_get_attr(study, "StudyDescription") or "")
+        study_date = str(_get_attr(study, "StudyDate") or "")
+        text_score = _text_match_score(query, description)
+        recency_score = _recency_score(study_date, today)
+        score = ranking.text_match_weight * text_score + ranking.recency_weight * recency_score
+        scored.append((score, accession))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return _dedupe_accessions([(None, accession) for _, accession in scored])
+
+
+def _text_match_score(query: str, description: str) -> float:
+    if not query or not description:
+        return 0.0
+    query_tokens = set(normalize_text(query).split())
+    desc_tokens = set(normalize_text(description).split())
+    if not query_tokens or not desc_tokens:
+        return 0.0
+    return len(query_tokens & desc_tokens) / len(query_tokens)
+
+
+def _recency_score(study_date: str, today: date) -> float:
+    if not study_date or len(study_date) != 8 or not study_date.isdigit():
+        return 0.0
+    try:
+        parsed = datetime.strptime(study_date, "%Y%m%d").date()
+    except ValueError:
+        return 0.0
+    delta_days = (today - parsed).days
+    if delta_days < 0:
+        return 0.0
+    if delta_days >= 365:
+        return 0.0
+    return 1.0 - (delta_days / 365.0)
+
+
+def _deadline_from_timeout(start_time: float, timeout_seconds: int | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    if timeout_seconds <= 0:
+        return start_time
+    return start_time + timeout_seconds
+
+
+def _deadline_reached(deadline: float | None) -> bool:
+    if deadline is None:
+        return False
+    return time.time() >= deadline
+
+
+def _dedupe_accessions(matches: list[tuple[object | None, str]]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _, accession in matches:
+        if accession in seen:
+            continue
+        seen.add(accession)
+        ordered.append(accession)
+    return ordered

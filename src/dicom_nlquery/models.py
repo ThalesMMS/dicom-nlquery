@@ -34,6 +34,39 @@ class LLMConfig(BaseModel):
 class GuardrailsConfig(BaseModel):
     study_date_range_default_days: int = 180
     max_studies_scanned_default: int = 700
+    search_timeout_seconds: int = 120
+
+
+class SearchPipelineConfig(BaseModel):
+    enabled: bool = True
+    structured_first: bool = True
+    max_attempts: int = 12
+    max_rewrites: int = 10
+    series_probe_enabled: bool = False
+    series_probe_limit: int = 50
+    wildcard_modes: list[str] = Field(default_factory=lambda: ["contains", "token_chain", "startswith"])
+
+
+class LexiconConfig(BaseModel):
+    path: str | None = None
+    synonyms: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class RagConfig(BaseModel):
+    enable: bool = False
+    index_path: str | None = None
+    top_k: int = 10
+    min_score: float = 0.2
+    provider: str = "hash"
+    model: str | None = None
+    base_url: str | None = None
+    embed_dim: int = 64
+
+
+class RankingConfig(BaseModel):
+    enabled: bool = True
+    text_match_weight: float = 0.7
+    recency_weight: float = 0.3
 
 
 class MatchingConfig(BaseModel):
@@ -52,6 +85,10 @@ class McpServerConfig(BaseModel):
 class NLQueryConfig(BaseModel):
     llm: LLMConfig
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    search_pipeline: SearchPipelineConfig = Field(default_factory=SearchPipelineConfig)
+    lexicon: LexiconConfig | None = None
+    rag: RagConfig | None = None
+    ranking: RankingConfig = Field(default_factory=RankingConfig)
     mcp: McpServerConfig | None = None
     nodes: dict[str, DicomNodeConfig] | None = None
     current_node: str | None = None
@@ -177,6 +214,10 @@ class SearchStats(BaseModel):
     limit_reached: bool
     execution_time_seconds: float
     date_range_applied: str
+    attempts_run: int
+    successful_stage: str | None
+    rewrites_tried: list[str] = Field(default_factory=list)
+    stages_tried: list[str] = Field(default_factory=list)
 
 
 class SearchResult(BaseModel):

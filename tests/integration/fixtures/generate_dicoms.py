@@ -65,6 +65,24 @@ SYNTHETIC_STUDIES: list[SyntheticStudy] = [
         modality="MR",
         study_description="MR cranio study",
     ),
+    SyntheticStudy(
+        patient_sex="F",
+        patient_birth_date="19981212",
+        study_date="20200115",
+        accession_number="ACC006",
+        series_description="FETAL BRAIN",
+        modality="MR",
+        study_description="MR fetal study",
+    ),
+    SyntheticStudy(
+        patient_sex="F",
+        patient_birth_date="19981111",
+        study_date="20200120",
+        accession_number="ACC007",
+        series_description="FETOR",
+        modality="MR",
+        study_description="MR fetor study",
+    ),
 ]
 
 
