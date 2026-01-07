@@ -41,9 +41,9 @@ def _build_search_plan(criteria, date_range: str | None):
     return {"dicom_mcp": plan}
 
 
-def _configure_logging(verbose: bool) -> logging.Logger:
+def _configure_logging(verbose: bool, llm_debug: bool = False) -> logging.Logger:
     level = "DEBUG" if verbose else "WARNING"
-    return configure_logging(level)
+    return configure_logging(level, show_extra=llm_debug)
 
 
 def _validate_date_range(date_range: str | None) -> str | None:
@@ -104,7 +104,7 @@ def main(
 def dry_run(ctx: click.Context, config_path_override: Path | None, query: str) -> None:
     """Parse query and show criteria without executing DICOM search."""
     if ctx.obj["llm_debug"] or ctx.obj["verbose"]:
-        _configure_logging(ctx.obj["verbose"])
+        _configure_logging(ctx.obj["verbose"], ctx.obj["llm_debug"])
     config_path = str(config_path_override) if config_path_override else ctx.obj["config_path"]
     config = _load_config(config_path)
 
@@ -153,7 +153,7 @@ def execute(
     unlimited: bool,
     query: str,
 ) -> None:
-    log = _configure_logging(ctx.obj["verbose"])
+    log = _configure_logging(ctx.obj["verbose"], ctx.obj["llm_debug"])
 
     try:
         config = _load_config(ctx.obj["config_path"])

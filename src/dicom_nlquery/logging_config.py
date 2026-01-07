@@ -54,7 +54,26 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=True)
 
 
-def configure_logging(level: str | int = "INFO") -> logging.Logger:
+class _ConsoleFormatter(logging.Formatter):
+    def __init__(self, show_extra: bool) -> None:
+        super().__init__("%(levelname)s: %(message)s")
+        self._show_extra = show_extra
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        if not self._show_extra:
+            return message
+        extra_data = getattr(record, "extra_data", None)
+        if extra_data is None:
+            return message
+        try:
+            extra_json = json.dumps(extra_data, ensure_ascii=True)
+        except TypeError:
+            extra_json = str(extra_data)
+        return f"{message} | {extra_json}"
+
+
+def configure_logging(level: str | int = "INFO", show_extra: bool = False) -> logging.Logger:
     import sys
 
     class _DynamicStreamHandler(logging.StreamHandler):
@@ -84,8 +103,7 @@ def configure_logging(level: str | int = "INFO") -> logging.Logger:
     # 2. Console Handler - Text formatted, clean (INFO)
     console_handler = _DynamicStreamHandler()
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
-    console_handler.setFormatter(console_formatter)
+    console_handler.setFormatter(_ConsoleFormatter(show_extra))
     root.addHandler(console_handler)
 
     return logging.getLogger("dicom_nlquery")
