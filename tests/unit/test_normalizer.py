@@ -4,9 +4,9 @@ from dicom_nlquery.normalizer import normalize
 
 
 def test_normalize_removes_accents() -> None:
-    text = "Cr\u00e2nio \u00c1xial"
+    text = "Caf\u00e9 Axial"
 
-    assert normalize(text) == "cranio axial"
+    assert normalize(text) == "cafe axial"
 
 
 def test_normalize_collapses_whitespace() -> None:

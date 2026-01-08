@@ -30,7 +30,7 @@ mcp:
     backoff_seconds: [0.5, 1.0, 2.0]
 
 lexicon:
-  path: "configs/lexicon.pt-BR.yaml"
+  path: "configs/lexicon.en-US.yaml"
 
 rag:
   enable: false
@@ -53,17 +53,17 @@ resolver:
   enabled: true
   require_confirmation: true
   confirmation:
-    accept_tokens: ["sim", "s", "yes", "y"]
-    reject_tokens: ["nao", "não", "n", "no"]
+    accept_tokens: ["yes", "y"]
+    reject_tokens: ["no", "n"]
     prompt_template: |
-      Modo: {mode}
-      Origem: {source_node}
-      Destino: {destination_node}
-      Filtros:
+      Mode: {mode}
+      Source: {source_node}
+      Destination: {destination_node}
+      Filters:
       {filters}
-      Confirmar? ({accept_tokens}/{reject_tokens})
-    invalid_response: "Resposta invalida. Use: {accept_tokens} ou {reject_tokens}."
-    correction_prompt: "Digite a consulta corrigida:"
-    cancel_message: "Operacao cancelada."
+      Confirm? ({accept_tokens}/{reject_tokens})
+    invalid_response: "Invalid response. Use: {accept_tokens} or {reject_tokens}."
+    correction_prompt: "Enter the corrected query:"
+    cancel_message: "Operation cancelled."
     max_invalid_responses: 2
     max_rejections: 2

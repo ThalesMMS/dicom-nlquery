@@ -15,9 +15,9 @@ from .models import DATE_RE, LLMConfig, QueryStudiesArgs, SearchCriteria
 log = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """Voce e um assistente que converte consultas em linguagem natural para criterios estruturados de busca DICOM.
+SYSTEM_PROMPT = """You are an assistant that converts natural language queries into structured DICOM search criteria.
 
-Sua tarefa e extrair criterios de busca do texto fornecido e retornar APENAS um objeto JSON valido seguindo este schema (dicom-mcp):
+Your task is to extract search criteria from the provided text and return ONLY a valid JSON object following this schema (dicom-mcp):
 
 {
   "study": {
@@ -27,88 +27,88 @@ Sua tarefa e extrair criterios de busca do texto fornecido e retornar APENAS um 
     "patient_birth_date": "YYYYMMDD" | "YYYYMMDD-YYYYMMDD" | null,
     "study_date": "YYYYMMDD" | "YYYYMMDD-YYYYMMDD" | null,
     "modality_in_study": "MR" | "CT" | "US" | "CR" | "MR\\\\CT" | null,
-    "study_description": "texto livre" | null,
+    "study_description": "free text" | null,
     "accession_number": "string" | null,
     "study_instance_uid": "string" | null
   },
   "series": {
     "modality": "MR" | "CT" | "US" | "CR" | null,
     "series_number": "string" | null,
-    "series_description": "texto livre" | null,
+    "series_description": "free text" | null,
     "series_instance_uid": "string" | null
   } | null
 }
 
-Regras:
-1. Retorne APENAS o JSON, sem explicacoes adicionais
-2. Use null para campos nao mencionados na consulta
-3. Para sexo: "mulher/feminino" = "F", "homem/masculino" = "M", "outro" = "O"
-4. Datas devem estar no formato DICOM YYYYMMDD ou intervalo YYYYMMDD-YYYYMMDD
-5. Para modalidades, use codigos DICOM (ex: MR, CT, US, CR). Use barra invertida para multiplas modalidades
-6. Para texto livre de exame/parte do corpo (ex: cranio, abdome), prefira study_description
-7. Use campos de series SOMENTE se a consulta pedir explicitamente algo de serie (ex: numero de serie, sequencia, fase, serie X). Caso contrario, use series=null
-8. Voce pode usar wildcard "*" nos campos de descricao se fizer sentido
-9. Se a consulta mencionar idade/faixa etaria, converta para patient_birth_date usando a data atual
-10. Nao invente modalidades: use apenas as que forem citadas no texto
-11. Nao inferir filtros. Se o usuario nao declarou explicitamente sexo, data, modalidade, descricao, IDs ou nome, retorne null.
-12. Nunca use a data de hoje como StudyDate padrão.
+Rules:
+1. Return ONLY the JSON, with no additional explanations
+2. Use null for fields not mentioned in the query
+3. For sex: "female/woman" = "F", "male/man" = "M", "other" = "O"
+4. Dates must be in DICOM format YYYYMMDD or range YYYYMMDD-YYYYMMDD
+5. For modalities, use DICOM codes (e.g., MR, CT, US, CR). Use backslash for multiple modalities
+6. For free-text exam/body-part terms (e.g., skull, abdomen), prefer study_description
+7. Use series fields ONLY if the query explicitly asks for series info (e.g., series number, sequence, phase, series X). Otherwise use series=null
+8. You may use wildcard "*" in description fields when it makes sense
+9. If the query mentions age/age range, convert to patient_birth_date using the current date
+10. Do not invent modalities: use only those cited in the text
+11. Do not infer filters. If the user did not explicitly state sex, date, modality, description, IDs, or name, return null.
+12. Never use today's date as the default StudyDate.
 """
 
 SEX_EVIDENCE = {
-    "M": ["masculino", "homem", "male"],
-    "F": ["feminino", "mulher", "female", "gestante"],
-    "O": ["outro", "outros", "other"],
+    "M": ["male", "man", "men"],
+    "F": ["female", "woman", "women", "pregnant"],
+    "O": ["other", "nonbinary", "non-binary"],
 }
 MODALITY_EVIDENCE = {
-    "MR": ["rm", "ressonancia", "mri"],
-    "CT": ["tc", "tomografia", "ct"],
-    "US": ["us", "ultrassom", "ultrasom", "usg"],
-    "CR": ["rx", "raio x", "raio-x", "raiox"],
-    "DX": ["rx", "raio x", "raio-x", "raiox"],
-    "SR": ["relatorio", "relatorio estruturado", "structured report", "sr"],
-    "PDF": ["pdf", "documento"],
+    "MR": ["mr", "mri", "magnetic resonance"],
+    "CT": ["ct", "computed tomography", "cat"],
+    "US": ["us", "ultrasound", "sonogram", "sonography"],
+    "CR": ["x-ray", "xray", "radiograph", "radiography"],
+    "DX": ["x-ray", "xray", "radiograph", "radiography"],
+    "SR": ["report", "structured report", "sr"],
+    "PDF": ["pdf", "document"],
 }
 STOPWORDS = {
-    "de",
-    "da",
-    "do",
-    "dos",
-    "das",
-    "para",
-    "pra",
-    "pro",
-    "no",
-    "na",
-    "nos",
-    "nas",
+    "of",
+    "the",
+    "for",
+    "to",
+    "in",
+    "on",
+    "with",
+    "without",
+    "and",
+    "or",
+    "a",
+    "an",
 }
-BODY_PART_TERMS = {"pelvis", "bassin"}
+BODY_PART_TERMS = {"pelvis", "pelvic"}
 DATE_HINT_RE = re.compile(
-    r"\b(hoje|ontem|semana(s)?|mes(es)?|dia(s)?|passad[ao]s?|ultim[ao]s?|recente(s)?|recentemente)\b"
+    r"\b(today|yesterday|week(s)?|month(s)?|day(s)?|last|past|recent|recently)\b"
 )
 DATE_TOKEN_RE = re.compile(r"\b\d{8}\b|\b\d{4}[-/]\d{2}[-/]\d{2}\b|\b\d{8}-\d{8}\b")
-AGE_RANGE_RE = re.compile(r"\b\d{1,3}\s*a\s*\d{1,3}\s*anos?\b")
-AGE_RE = re.compile(r"\b\d{1,3}\s*anos?\b")
-DESTINATION_RE = re.compile(r"\bpara\s+([a-z0-9_-]+)\b")
-NAME_START_RE = re.compile(r"\b(?:exames?|estudos?)\s+de\s+(.+)$")
-PATIENT_START_RE = re.compile(r"\b(?:paciente|pacientes)\s+(?:de\s+)?(.+)$")
+AGE_RANGE_RE = re.compile(r"\b\d{1,3}\s*(?:to|-)\s*\d{1,3}\s*(?:years?|yrs?|yr)?\b")
+AGE_RE = re.compile(r"\b\d{1,3}\s*(?:years?|yrs?|yr|y/o|yo)\b")
+DESTINATION_RE = re.compile(r"\bto\s+([a-z0-9_-]+)\b")
+NAME_START_RE = re.compile(r"\b(?:exams?|studies)\s+(?:of|for)\s+(.+)$")
+PATIENT_START_RE = re.compile(r"\b(?:patient|patients)\s+(?:of\s+)?(.+)$")
 NAME_CLAUSE_BREAK_RE = re.compile(
-    r"\b(para|com|sem|no|na|nos|nas|sexo|feminino|masculino|gestante|idade|anos?|ano|meses?|mes|dia|dias"
-    r"|rm|mri|tc|ct|tomografia|ressonancia|ultrassom|usg|raio|rx)\b"
+    r"\b(to|with|without|in|sex|female|male|pregnant|age|years?|months?|days?"
+    r"|mr|mri|ct|computed|tomography|ultrasound|x[- ]?ray|radiograph|cr|dx)\b"
 )
 NAME_BLOCKLIST = {
-    "paciente",
-    "pacientes",
-    "sexo",
-    "feminino",
-    "masculino",
-    "gestante",
-    "exame",
-    "exames",
-    "estudo",
-    "estudos",
+    "patient",
+    "patients",
+    "sex",
+    "female",
+    "male",
+    "pregnant",
+    "exam",
+    "exams",
+    "study",
+    "studies",
 }
-NAME_PREPOSITIONS = {"de", "da", "do", "dos", "das"}
+NAME_PREPOSITIONS = {"of", "for"}
 
 
 def _normalize_text(text: str) -> str:
@@ -386,12 +386,12 @@ def apply_evidence_guardrails(
             data["series"] = series
 
     if not has_study_filters and data.get("series") is None:
-        raise ValueError("Consulta nao especifica filtros validos.")
+        raise ValueError("Query does not specify valid filters.")
 
     try:
         return SearchCriteria.model_validate(data)
     except ValidationError as exc:
-        raise ValueError("Consulta nao especifica filtros validos.") from exc
+        raise ValueError("Query does not specify valid filters.") from exc
 
 
 def extract_json(text: str) -> dict:

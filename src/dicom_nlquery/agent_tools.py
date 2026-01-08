@@ -24,11 +24,11 @@ MAX_SERIES_DISPLAY = 15
 
 TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.QUERY_STUDIES: (
-        "Busca estudos DICOM. Retorna lista de UIDs e metadados. "
-        "Use filtros apenas quando explicitamente citados pelo usuario."
+        "Query DICOM studies. Returns a list of UIDs and metadata. "
+        "Use filters only when explicitly cited by the user."
     ),
-    ToolName.QUERY_SERIES: "Lista series de um estudo especifico.",
-    ToolName.MOVE_STUDY: "Move estudo para um node de destino.",
+    ToolName.QUERY_SERIES: "List series for a specific study.",
+    ToolName.MOVE_STUDY: "Move a study to a destination node.",
 }
 
 TOOL_ARGS_MODELS = {
@@ -102,13 +102,13 @@ def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: Ag
     try:
         tool = ToolName(name)
     except ValueError:
-        return _tool_error(ToolName.QUERY_STUDIES, "unknown_tool", f"Ferramenta desconhecida: {name}")
+        return _tool_error(ToolName.QUERY_STUDIES, "unknown_tool", f"Unknown tool: {name}")
 
     args_model = TOOL_ARGS_MODELS[tool]
     try:
         parsed = args_model.model_validate(args)
     except ValidationError as exc:
-        return _tool_error(tool, "validation_error", "Parametros invalidos", exc.errors())
+        return _tool_error(tool, "validation_error", "Invalid parameters", exc.errors())
 
     if tool == ToolName.QUERY_STUDIES:
         params = parsed.model_dump(exclude_none=True)
@@ -124,7 +124,7 @@ def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: Ag
         try:
             results = client.query_studies(**params)
         except Exception as exc:
-            return _tool_error(tool, "connection_error", f"Erro de conexao: {exc}")
+            return _tool_error(tool, "connection_error", f"Connection error: {exc}")
 
         summaries: list[StudySummary] = []
         for study in results:
@@ -154,13 +154,13 @@ def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: Ag
     if tool == ToolName.QUERY_SERIES:
         uid = parsed.study_instance_uid
         if not state.has_uid(uid):
-            return _tool_error(tool, "uid_not_in_state", "UID nao encontrado no estado atual")
+            return _tool_error(tool, "uid_not_in_state", "UID not found in current state")
 
         params = parsed.model_dump(exclude_none=True)
         try:
             series = client.query_series(**params)
         except Exception as exc:
-            return _tool_error(tool, "connection_error", f"Erro ao consultar series: {exc}")
+            return _tool_error(tool, "connection_error", f"Error querying series: {exc}")
 
         state.selected_uid = uid
         state.last_tool = tool
@@ -176,7 +176,7 @@ def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: Ag
     if tool == ToolName.MOVE_STUDY:
         uid = parsed.study_instance_uid
         if not state.has_uid(uid):
-            return _tool_error(tool, "uid_not_in_state", "UID nao encontrado no estado atual")
+            return _tool_error(tool, "uid_not_in_state", "UID not found in current state")
 
         try:
             result = client.move_study(
@@ -184,7 +184,7 @@ def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: Ag
                 study_instance_uid=uid,
             )
         except Exception as exc:
-            return _tool_error(tool, "move_failed", f"Erro C-MOVE: {exc}")
+            return _tool_error(tool, "move_failed", f"C-MOVE error: {exc}")
 
         state.selected_uid = uid
         state.last_tool = tool
@@ -192,4 +192,4 @@ def execute_tool(name: str, args: dict[str, Any], client: DicomClient, state: Ag
 
         return ToolResult(tool=tool, ok=bool(result.get("success")), data=result)
 
-    return _tool_error(tool, "unsupported_tool", f"Ferramenta nao suportada: {tool.value}")
+    return _tool_error(tool, "unsupported_tool", f"Unsupported tool: {tool.value}")

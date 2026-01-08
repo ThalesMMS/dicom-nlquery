@@ -15,28 +15,28 @@ from dicom_nlquery.models import AgentPhase
 from dicom_nlquery.node_registry import NodeRegistry
 from dicom_nlquery.resolver import resolve_request
 
-# Logs simples para ver o agente "pensando"
+# Simple logs to see the agent "thinking".
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "query",
-        help="Ex: 'RM de crânio de mulheres de 20 a 40 anos para RADIANT'",
+        help="Example: 'Cranial MR for women ages 20 to 40 to RADIANT'",
     )
     args = parser.parse_args()
 
     # 1. Config
     config = load_config("config.yaml")
     
-    # 2. DICOM Client (In-Process para performance)
-    # Assume que o dicom-mcp está configurado
+    # 2. DICOM Client (in-process for performance)
+    # Assumes dicom-mcp is configured
     if not config.mcp:
-         print("Erro: Configure a seção mcp no config.yaml")
+         print("Error: Configure the mcp section in config.yaml")
          return
 
-    # Carrega a config do dicom-mcp (gambiarra útil para pegar host/port)
-    # Em produção, você carregaria o YAML do dicom-mcp corretamente
+    # Load dicom-mcp config (quick workaround to get host/port)
+    # In production, load the dicom-mcp YAML properly
     client = DicomClient(
         host="localhost", 
         port=4242, 
@@ -54,7 +54,7 @@ def main():
     require_confirmation = True
     if config.resolver and config.resolver.enabled:
         if not config.mcp:
-            print("Erro: Configure a seção mcp no config.yaml")
+            print("Error: Configure the mcp section in config.yaml")
             return
 
         async def _fetch_nodes():
@@ -65,11 +65,11 @@ def main():
         try:
             payload = anyio.run(_fetch_nodes)
         except Exception as exc:
-            print(f"Erro ao carregar list_dicom_nodes: {exc}")
+            print(f"Error loading list_dicom_nodes: {exc}")
             return
         nodes = payload.get("nodes") if isinstance(payload, dict) else None
         if not isinstance(nodes, list):
-            print("Erro: list_dicom_nodes retornou formato invalido")
+            print("Error: list_dicom_nodes returned invalid format")
             return
         registry = NodeRegistry.from_tool_payload(nodes)
         resolver = lambda q: resolve_request(q, registry, llm)
@@ -85,17 +85,17 @@ def main():
         require_confirmation=require_confirmation,
     )
 
-    print(f"🚀 Iniciando investigação para: {args.query}")
+    print(f"🚀 Starting investigation for: {args.query}")
     resposta = agent.run(args.query)
     while agent.state.phase in {AgentPhase.CONFIRM, AgentPhase.RESOLVE}:
-        print(f"\n🤖 Resposta:\n{resposta}")
+        print(f"\n🤖 Response:\n{resposta}")
         try:
             followup = input("> ")
         except EOFError:
             return
         resposta = agent.run(followup)
 
-    print(f"\n🤖 Resposta:\n{resposta}")
+    print(f"\n🤖 Response:\n{resposta}")
 
 if __name__ == "__main__":
     main()

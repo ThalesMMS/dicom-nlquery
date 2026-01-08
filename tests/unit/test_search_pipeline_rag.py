@@ -31,7 +31,7 @@ class FakeDicomClient:
 
 def test_search_pipeline_uses_rag_suggestions(monkeypatch) -> None:
     client = FakeDicomClient()
-    criteria = SearchCriteria(study=StudyQuery(study_description="gestacao"))
+    criteria = SearchCriteria(study=StudyQuery(study_description="pregnancy"))
     pipeline_config = SearchPipelineConfig(max_attempts=6, max_rewrites=2)
     rag_config = RagConfig(enable=True, index_path="/tmp/fake.sqlite")
 

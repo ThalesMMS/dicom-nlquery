@@ -30,7 +30,7 @@ mcp:
     backoff_seconds: [0.1, 0.2]
 
 lexicon:
-  path: "configs/lexicon.pt-BR.yaml"
+  path: "configs/lexicon.en-US.yaml"
 
 rag:
   enable: false

@@ -16,7 +16,7 @@ from .logging_config import mask_phi
 
 class DicomClient:
     def __init__(self, host: str, port: int, calling_aet: str, called_aet: str) -> None:
-        # Reduz verbosidade de logs internos do pynetdicom (mantém avisos/erros)
+        # Reduce verbosity for internal pynetdicom logs (keep warnings/errors).
         logging.getLogger("pynetdicom").setLevel(logging.WARNING)
         logging.getLogger("pynetdicom.dimse").setLevel(logging.WARNING)
 

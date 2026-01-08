@@ -534,15 +534,15 @@ class QueryStudiesArgs(BaseModel):
         normalized = unicodedata.normalize("NFKD", value.strip().upper())
         normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
         alias_map = {
-            "RM": "MR",
             "MRI": "MR",
-            "RESSONANCIA": "MR",
-            "RESSONANCIA MAGNETICA": "MR",
-            "RESSONANCIA MAGNÉTICA": "MR",
-            "TC": "CT",
-            "TOMOGRAFIA": "CT",
-            "USG": "US",
-            "ULTRASSOM": "US",
+            "MAGNETIC RESONANCE": "MR",
+            "MAGNETIC RESONANCE IMAGING": "MR",
+            "COMPUTED TOMOGRAPHY": "CT",
+            "CAT": "CT",
+            "ULTRASOUND": "US",
+            "SONOGRAPHY": "US",
+            "X-RAY": "CR",
+            "XRAY": "CR",
         }
         allowed = {"MR", "CT", "US", "CR", "DX", "SR", "PDF"}
         direct = alias_map.get(normalized, normalized)
@@ -570,7 +570,7 @@ class QueryStudiesArgs(BaseModel):
             if " " in alias and alias in normalized and mapped_value in allowed:
                 return mapped_value
 
-        raise ValueError(f"modality_in_study inválida: {normalized}")
+        raise ValueError(f"modality_in_study invalid: {normalized}")
 
 
 class QuerySeriesArgs(BaseModel):

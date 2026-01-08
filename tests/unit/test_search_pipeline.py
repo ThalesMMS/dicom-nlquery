@@ -40,10 +40,10 @@ class FakeDicomClient:
 def test_search_pipeline_rewrites_description() -> None:
     client = FakeDicomClient()
     criteria = SearchCriteria(
-        study=StudyQuery(study_description="feto", modality_in_study="MR")
+        study=StudyQuery(study_description="fetus", modality_in_study="MR")
     )
     pipeline_config = SearchPipelineConfig(max_attempts=5, max_rewrites=5)
-    lexicon_config = LexiconConfig(synonyms={"feto": ["fetal"]})
+    lexicon_config = LexiconConfig(synonyms={"fetus": ["fetal"]})
 
     result = execute_search(
         criteria,
@@ -78,10 +78,10 @@ def test_search_pipeline_scored_rewrite_prefers_closest() -> None:
 
     client = ScoredClient()
     criteria = SearchCriteria(
-        study=StudyQuery(study_description="feto", modality_in_study="MR")
+        study=StudyQuery(study_description="fetus", modality_in_study="MR")
     )
     pipeline_config = SearchPipelineConfig(max_attempts=6, max_rewrites=1)
-    lexicon_config = LexiconConfig(synonyms={"feto": ["fetal", "gestacao"]})
+    lexicon_config = LexiconConfig(synonyms={"fetus": ["fetal", "pregnancy"]})
 
     result = execute_search(
         criteria,

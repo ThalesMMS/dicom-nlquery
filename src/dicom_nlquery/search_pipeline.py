@@ -254,7 +254,7 @@ def run_pipeline_sync(
     for attempt in attempts:
         if _deadline_reached(deadline):
             stats.limit_reached = True
-            log.warning("AVISO: Tempo limite da busca atingido.")
+            log.warning("Warning: search timeout reached.")
             break
         stats.attempts_run += 1
         _record_stage(stats, attempt.stage)
@@ -281,7 +281,7 @@ def run_pipeline_sync(
         for study in studies:
             if _deadline_reached(deadline):
                 stats.limit_reached = True
-                log.warning("AVISO: Tempo limite da busca atingido.")
+                log.warning("Warning: search timeout reached.")
                 break
             if log.isEnabledFor(logging.DEBUG):
                 log.debug("Study candidate", extra={"extra_data": mask_phi(study)})
@@ -289,7 +289,7 @@ def run_pipeline_sync(
                 stats.limit_reached = True
                 remaining = max(len(studies) - scanned_this_attempt, 0)
                 log.warning(
-                    "AVISO: Limite de %s estudos atingido. %s estudos adicionais nao foram avaliados.",
+                    "Warning: limit of %s studies reached. %s additional studies were not evaluated.",
                     max_studies,
                     remaining,
                 )
@@ -470,7 +470,7 @@ async def run_pipeline_async(
     for attempt in attempts:
         if _deadline_reached(deadline):
             stats.limit_reached = True
-            log.warning("AVISO: Tempo limite da busca atingido.")
+            log.warning("Warning: search timeout reached.")
             break
         stats.attempts_run += 1
         _record_stage(stats, attempt.stage)
@@ -497,7 +497,7 @@ async def run_pipeline_async(
         for study in studies:
             if _deadline_reached(deadline):
                 stats.limit_reached = True
-                log.warning("AVISO: Tempo limite da busca atingido.")
+                log.warning("Warning: search timeout reached.")
                 break
             if log.isEnabledFor(logging.DEBUG):
                 log.debug("Study candidate", extra={"extra_data": mask_phi(study)})
@@ -505,7 +505,7 @@ async def run_pipeline_async(
                 stats.limit_reached = True
                 remaining = max(len(studies) - scanned_this_attempt, 0)
                 log.warning(
-                    "AVISO: Limite de %s estudos atingido. %s estudos adicionais nao foram avaliados.",
+                    "Warning: limit of %s studies reached. %s additional studies were not evaluated.",
                     max_studies,
                     remaining,
                 )

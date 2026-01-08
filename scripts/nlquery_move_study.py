@@ -4,7 +4,7 @@ Natural language DICOM query via dicom-nlquery + dicom-mcp server.
 
 Example:
   python scripts/nlquery_move_study.py \
-    "mulheres de 20 a 40 anos com cranio" \
+    "women ages 20 to 40 with cranial MR" \
     --mcp-config ../dicom-mcp/configuration.yaml \
     --source-node orthanc \
     --destination-node radiant \
@@ -63,7 +63,9 @@ def _setup_logging(verbose: bool, log_file: str | None) -> logging.Logger:
 
 def _build_temp_mcp_config(args: argparse.Namespace) -> tuple[McpServerConfig, str, str, str]:
     if not args.destination_host or not args.destination_port:
-        raise ValueError("destination-host e destination-port sao obrigatorios sem --mcp-config")
+        raise ValueError(
+            "destination-host and destination-port are required without --mcp-config"
+        )
 
     config_data = {
         "nodes": {
@@ -123,7 +125,7 @@ def _resolve_mcp_settings(
 
 def _require_destination_node(args: argparse.Namespace) -> str:
     if not args.destination_node:
-        raise ValueError("--destination-node e obrigatorio quando usa dicom-mcp config existente")
+        raise ValueError("--destination-node is required when using an existing dicom-mcp config")
     return args.destination_node
 
 
@@ -175,7 +177,7 @@ async def _move_studies(
                     additional_attributes=["StudyInstanceUID", "PatientID"],
                 )
                 if not studies:
-                    print(f"StudyInstanceUID nao encontrado para {accession}")
+                    print(f"StudyInstanceUID not found for {accession}")
                     continue
                 for study in studies:
                     study_uid = study.get("StudyInstanceUID")
@@ -198,17 +200,17 @@ async def _move_studies(
                 patient_accessions[patient_id].append(accession)
 
         result_tuples = [(pid, accs) for pid, accs in patient_accessions.items()]
-        print("Resultados (patient_id, accession_numbers):")
+        print("Results (patient_id, accession_numbers):")
         print(result_tuples)
 
         records = list(selected_records.values())
         if not records:
-            print("Nenhum StudyInstanceUID encontrado para mover.")
+            print("No StudyInstanceUID found to move.")
             return 2
 
         targets = records if move_all else records[:1]
         print(
-            f"Encontrados {len(records)} accession(s); movendo {len(targets)} estudo(s) para {destination_node}."
+            f"Found {len(records)} accession(s); moving {len(targets)} study(ies) to {destination_node}."
         )
 
         successes = 0
@@ -217,7 +219,7 @@ async def _move_studies(
             study_uid = record["study_instance_uid"]
             label = accession or study_uid or "<unknown>"
             if not study_uid:
-                print(f"StudyInstanceUID ausente para {label}")
+                print(f"Missing StudyInstanceUID for {label}")
                 continue
 
             move_result = await client.move_study(
@@ -243,7 +245,7 @@ async def _move_studies(
         if destination_node:
             verification_failed = False
             await client.switch_dicom_node(destination_node)
-            print("Verificacao pos-move (C-FIND no destino):")
+            print("Post-move verification (C-FIND on destination):")
             for record in targets:
                 accession = record["accession"]
                 study_uid = record["study_instance_uid"]
@@ -265,15 +267,15 @@ async def _move_studies(
                 found = bool(studies)
                 if not found:
                     verification_failed = True
-                print(f"  {accession}: {'ENCONTRADO' if found else 'NAO ENCONTRADO'}")
+                print(f"  {accession}: {'FOUND' if found else 'NOT FOUND'}")
             if verification_failed:
                 print(
-                    "AVISO: Estudos nao encontrados no destino via C-FIND. "
-                    "Verifique o node de destino na configuracao do dicom-mcp."
+                    "Warning: studies not found on destination via C-FIND. "
+                    "Check the destination node in the dicom-mcp configuration."
                 )
 
         if successes == 0:
-            print("Nenhum estudo foi movido com sucesso.")
+            print("No studies were moved successfully.")
             return 2
 
         return 0
@@ -283,7 +285,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="NL query via dicom-nlquery + dicom-mcp server",
     )
-    parser.add_argument("query", help="Natural language query (PT-BR)")
+    parser.add_argument("query", help="Natural language query (EN)")
     parser.add_argument("--config", default=None, help="dicom-nlquery config.yaml")
     parser.add_argument("--host", default="localhost", help="DICOM SCP host (legacy)")
     parser.add_argument("--port", type=int, default=11112, help="DICOM SCP port (legacy)")
@@ -392,13 +394,13 @@ def main() -> int:
             args, config
         )
     except Exception as exc:
-        print(f"Erro ao resolver dicom-mcp: {exc}")
+        print(f"Error resolving dicom-mcp: {exc}")
         return 2
 
     try:
         criteria = parse_nl_to_criteria(args.query, llm_config, strict_evidence=True)
     except Exception as exc:
-        print(f"Erro ao parsear a consulta: {exc}")
+        print(f"Error parsing query: {exc}")
         return 3
     logger.info("Criteria parsed", extra={"extra_data": criteria.model_dump()})
 
@@ -419,7 +421,7 @@ def main() -> int:
             node_name=source_node,
         )
     except Exception as exc:
-        print(f"Erro na busca DICOM: {exc}")
+        print(f"Error in DICOM search: {exc}")
         return 2
     logger.info(
         "Search completed",
@@ -434,7 +436,7 @@ def main() -> int:
     accessions = list(dict.fromkeys(result.accession_numbers))
     study_uids = list(dict.fromkeys(result.study_instance_uids))
     if not accessions and not study_uids:
-        print("Nenhum estudo encontrado para mover.")
+        print("No studies found to move.")
         return 1
 
     try:
@@ -449,7 +451,7 @@ def main() -> int:
             logger,
         )
     except Exception as exc:
-        print(f"Erro ao mover estudos: {exc}")
+        print(f"Error moving studies: {exc}")
         return 2
     finally:
         if temp_path:

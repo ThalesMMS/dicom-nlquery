@@ -31,7 +31,7 @@ def test_cli_dry_run_outputs_json(monkeypatch, tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     runner = CliRunner()
     criteria = SearchCriteria(
-        study=StudyQuery(patient_sex="F", study_description="cranio"),
+        study=StudyQuery(patient_sex="F", study_description="cranial"),
     )
 
     def fake_parse(_query, _llm, **_kwargs):

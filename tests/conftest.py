@@ -18,7 +18,7 @@ def fake_llm() -> FakeLLMClient:
         '\"patient_birth_date\": null, '
         '\"study_date\": null, '
         '\"modality_in_study\": null, '
-        '\"study_description\": \"cranio\", '
+        '\"study_description\": \"cranial\", '
         '\"accession_number\": null, '
         '\"study_instance_uid\": null'
         '}, \"series\": null}'
@@ -28,7 +28,7 @@ def fake_llm() -> FakeLLMClient:
 @pytest.fixture
 def fake_llm_invalid() -> FakeLLMClient:
     return FakeLLMClient(
-        '{\"study\": {\"patient_sex\": \"X\", \"study_description\": \"cranio\"}}'
+        '{\"study\": {\"patient_sex\": \"X\", \"study_description\": \"cranial\"}}'
     )
 
 

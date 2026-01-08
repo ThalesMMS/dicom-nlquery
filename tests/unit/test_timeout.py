@@ -10,7 +10,7 @@ class FakeClient:
             {
                 "StudyInstanceUID": "1",
                 "AccessionNumber": "ACC001",
-                "StudyDescription": "cranio",
+                "StudyDescription": "cranial",
                 "StudyDate": "20240101",
             }
         ]
@@ -21,7 +21,7 @@ class FakeClient:
 
 def test_search_timeout_short_circuits() -> None:
     client = FakeClient()
-    criteria = SearchCriteria(study=StudyQuery(study_description="cranio"))
+    criteria = SearchCriteria(study=StudyQuery(study_description="cranial"))
     guardrails = GuardrailsConfig(search_timeout_seconds=0)
 
     result = execute_search(criteria, query_client=client, guardrails_config=guardrails)

@@ -34,4 +34,4 @@ def test_guardrails_unlimited_logs_warning(caplog) -> None:
 
     assert date_range is None
     assert max_studies is None
-    assert any("Varredura ilimitada" in record.message for record in caplog.records)
+    assert any("unlimited scan requested" in record.message for record in caplog.records)

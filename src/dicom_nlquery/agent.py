@@ -30,18 +30,18 @@ from .models import (
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = f"""
-Você é um Agente Especialista em Radiologia e DICOM. Data: {date.today()}.
+You are a specialist agent in Radiology and DICOM. Date: {date.today()}.
 
-REGRAS CRÍTICAS DE OPERAÇÃO:
-1. **TOOL CALLING**: Use exclusivamente as tools estruturadas (tool_calls). Nunca envie JSON no texto.
-2. **SEM INFERÊNCIA**: Não crie filtros que o usuário não mencionou explicitamente.
-3. **SEM ALUCINAÇÃO**: Nunca invente UIDs; use apenas UIDs retornados por tools.
-4. **SEQUÊNCIA**: query_studies -> query_series -> move_study. Nunca pule etapas.
-5. **UMA FERRAMENTA POR VEZ**: Em cada turno faça no máximo 1 tool_call.
-6. **UID REAL**: Não use placeholders (<...>).
-7. **SEXO**: Só use patient_sex se o usuário declarar explicitamente.
-8. **GUARDRAILS**: Date range padrão pode ser aplicado como proteção operacional.
-9. **NODES**: Identificadores de nodes vem de um registro externo e nao podem aparecer em filtros.
+CRITICAL OPERATING RULES:
+1. **TOOL CALLING**: Use only structured tools (tool_calls). Never send JSON in the text.
+2. **NO INFERENCE**: Do not create filters the user did not explicitly mention.
+3. **NO HALLUCINATION**: Never invent UIDs; use only UIDs returned by tools.
+4. **SEQUENCE**: query_studies -> query_series -> move_study. Never skip steps.
+5. **ONE TOOL AT A TIME**: In each turn, make at most 1 tool_call.
+6. **REAL UID**: Do not use placeholders (<...>).
+7. **SEX**: Only use patient_sex if the user explicitly states it.
+8. **GUARDRAILS**: Default date range may be applied as operational protection.
+9. **NODES**: Node identifiers come from an external registry and must not appear in filters.
 """
 
 MAX_STEPS = 10
@@ -58,32 +58,32 @@ RELAXATION_ORDER = [
 ]
 
 SEX_EVIDENCE = {
-    "M": ["masculino", "homem", "male"],
-    "F": ["feminino", "mulher", "female", "gestante"],
-    "O": ["outro", "outros", "other"],
+    "M": ["male", "man", "men"],
+    "F": ["female", "woman", "women", "pregnant"],
+    "O": ["other", "nonbinary", "non-binary"],
 }
 MODALITY_EVIDENCE = {
-    "MR": ["rm", "ressonancia", "ressonância", "mri"],
-    "CT": ["tc", "tomografia", "ct"],
-    "US": ["us", "ultrassom", "ultrasom", "usg"],
-    "CR": ["rx", "raio x", "raio-x", "raiox"],
-    "DX": ["rx", "raio x", "raio-x", "raiox"],
+    "MR": ["mr", "mri", "magnetic resonance"],
+    "CT": ["ct", "computed tomography", "cat"],
+    "US": ["us", "ultrasound", "sonogram", "sonography"],
+    "CR": ["x-ray", "xray", "radiograph", "radiography"],
+    "DX": ["x-ray", "xray", "radiograph", "radiography"],
 }
 
 
 def _protocol_error(message: str) -> str:
-    return f"ERRO DE PROTOCOLO: {message}"
+    return f"PROTOCOL ERROR: {message}"
 
 
 def _format_selection_prompt(state: AgentState) -> str:
-    lines = ["Foram encontrados multiplos estudos. Refine a busca ou escolha um UID:"]
+    lines = ["Multiple studies found. Refine the search or choose a UID:"]
     for item in state.search_results[:5]:
         lines.append(
-            f"- UID {item.study_instance_uid} | Data {item.study_date or '-'} | "
+            f"- UID {item.study_instance_uid} | Date {item.study_date or '-'} | "
             f"Desc {item.study_description or '-'}"
         )
     if len(state.search_results) > 5:
-        lines.append("(Mostrando apenas os primeiros resultados.)")
+        lines.append("(Showing only the first results.)")
     return "\n".join(lines)
 
 
@@ -91,16 +91,16 @@ def _format_move_result(result: ToolResult) -> str:
     data = result.data or {}
     if result.ok:
         return (
-            "C-MOVE concluido. "
+            "C-MOVE completed. "
             f"Completed={data.get('completed')} Failed={data.get('failed')} Warning={data.get('warning')}"
         )
-    return f"Falha no C-MOVE: {data.get('message', 'Erro desconhecido')}"
+    return f"C-MOVE failed: {data.get('message', 'Unknown error')}"
 
 
 def _format_error(result: ToolResult) -> str:
     if result.error:
-        return f"Erro: {result.error.message}"
-    return "Erro desconhecido."
+        return f"Error: {result.error.message}"
+    return "Unknown error."
 
 
 def _format_validation_feedback(details: Any | None) -> str:
@@ -112,17 +112,17 @@ def _format_validation_feedback(details: Any | None) -> str:
                 continue
             loc = entry.get("loc") or []
             field = ".".join(str(part) for part in loc) if loc else "?"
-            msg = entry.get("msg") or entry.get("type") or "Erro de validacao"
+            msg = entry.get("msg") or entry.get("type") or "Validation error"
             items.append(f"{field}: {msg}")
     elif details:
         items.append(str(details))
     else:
-        items.append("Erro de validacao nos parametros.")
+        items.append("Validation error in parameters.")
     summary = "; ".join(items)
     return (
-        "SISTEMA: Erro de validacao nos argumentos da tool. "
-        "Corrija e reenvie a tool_call com o schema. "
-        f"Detalhes: {summary}"
+        "SYSTEM: Validation error in tool arguments. "
+        "Fix and resend the tool_call with the schema. "
+        f"Details: {summary}"
     )
 
 
@@ -262,14 +262,15 @@ class DicomAgent:
                             {
                                 "role": "user",
                                 "content": (
-                                    "SISTEMA: Busca vazia. Refaça a busca removendo o filtro "
-                                    f"'{removed}'. Use apenas estes filtros: {json.dumps(relaxed, ensure_ascii=True)}"
+                                    "SYSTEM: Empty search. Retry without filter "
+                                    f"'{removed}'. Use only these filters: "
+                                    f"{json.dumps(relaxed, ensure_ascii=True)}"
                                 ),
                             }
                         )
                         self.state.phase = AgentPhase.SEARCH
                         return None
-                return "Nenhum estudo encontrado com os filtros informados."
+                return "No studies found with the provided filters."
 
             if count == 1 and self.state.search_results:
                 self.state.selected_uid = self.state.search_results[0].study_instance_uid
@@ -325,8 +326,8 @@ class DicomAgent:
             {
                 "role": "user",
                 "content": (
-                    "SISTEMA: Pedido resolvido. Use apenas estas informacoes e filtros. "
-                    f"Dados: {json.dumps(payload, ensure_ascii=True)}"
+                    "SYSTEM: Request resolved. Use only this information and filters. "
+                    f"Data: {json.dumps(payload, ensure_ascii=True)}"
                 ),
             }
         )
@@ -341,7 +342,7 @@ class DicomAgent:
             self.state.resolved_request = None
             self.state.awaiting_confirmation = False
             self.state.phase = AgentPhase.RESOLVE
-            return "SISTEMA: Solicite esclarecimento. Itens pendentes: " + ", ".join(
+            return "SYSTEM: Ask for clarification. Pending items: " + ", ".join(
                 result.unresolved
             )
         if self._require_confirmation:
@@ -418,12 +419,12 @@ class DicomAgent:
                     return content
                 if allowed_tools:
                     if "{" in content:
-                        return _protocol_error("Tool calls devem ser enviados pelo canal tool_calls.")
-                    return _protocol_error("Uma tool_call e obrigatoria nesta etapa.")
+                        return _protocol_error("Tool calls must be sent via tool_calls.")
+                    return _protocol_error("A tool_call is required at this step.")
                 return content
 
             if len(tool_calls) != 1:
-                return _protocol_error("Apenas 1 tool_call por etapa.")
+                return _protocol_error("Only 1 tool_call per step.")
 
             tool_call = tool_calls[0]
             function = tool_call.get("function") or {}
@@ -431,26 +432,26 @@ class DicomAgent:
             arguments = function.get("arguments", {})
 
             if not name:
-                return _protocol_error("Tool call sem nome.")
+                return _protocol_error("Tool call missing name.")
 
             try:
                 tool_name = ToolName(name)
             except ValueError:
-                return _protocol_error(f"Ferramenta nao permitida: {name}")
+                return _protocol_error(f"Tool not allowed: {name}")
 
             if tool_name not in allowed_tools:
                 return _protocol_error(
-                    f"Ferramenta {name} nao permitida na fase {self.state.phase.value}."
+                    f"Tool {name} not allowed in phase {self.state.phase.value}."
                 )
 
             if isinstance(arguments, str):
                 try:
                     arguments = json.loads(arguments)
                 except json.JSONDecodeError:
-                    return _protocol_error("Arguments devem ser JSON valido.")
+                    return _protocol_error("Arguments must be valid JSON.")
 
             if not isinstance(arguments, dict):
-                return _protocol_error("Arguments devem ser um objeto JSON.")
+                return _protocol_error("Arguments must be a JSON object.")
 
             arguments = self._apply_destination_node(tool_name, arguments)
 
@@ -474,11 +475,11 @@ class DicomAgent:
                     )
                     if invalid_field:
                         return _protocol_error(
-                            f"Filtro '{invalid_field}' nao foi explicitamente solicitado. Remova-o."
+                            f"Filter '{invalid_field}' was not explicitly requested. Remove it."
                         )
                     if self.state.requires_selection and parsed.study_instance_uid is None:
                         return _protocol_error(
-                            "Multiplos estudos encontrados. Selecione um study_instance_uid explicitamente."
+                            "Multiple studies found. Explicitly select a study_instance_uid."
                         )
 
             result = execute_tool(name, arguments, self.client, self.state)
@@ -504,4 +505,4 @@ class DicomAgent:
             if message is not None:
                 return message
 
-        return "Limite de passos atingido."
+        return "Step limit reached."

@@ -41,7 +41,7 @@ def test_execute_search_filters_results() -> None:
             "PatientSex": "F",
             "PatientBirthDate": "19900101",
             "StudyDate": "20200101",
-            "StudyDescription": "Cranio",
+            "StudyDescription": "Cranial",
         },
         {
             "StudyInstanceUID": "2",
@@ -49,28 +49,28 @@ def test_execute_search_filters_results() -> None:
             "PatientSex": "M",
             "PatientBirthDate": "19800101",
             "StudyDate": "20200101",
-            "StudyDescription": "Torax",
+            "StudyDescription": "Thorax",
         },
     ]
     series_by_uid = {
         "1": [
             {
                 "SeriesInstanceUID": "S1",
-                "SeriesDescription": "AX T1 CRANIO",
+                "SeriesDescription": "AX T1 CRANIAL",
                 "Modality": "MR",
             }
         ],
         "2": [
             {
                 "SeriesInstanceUID": "S2",
-                "SeriesDescription": "AX T1 TORAX",
+                "SeriesDescription": "AX T1 THORAX",
                 "Modality": "MR",
             }
         ],
     }
     client = FakeDicomClient(studies, series_by_uid)
     criteria = SearchCriteria(
-        study=StudyQuery(patient_sex="F", study_description="cranio"),
+        study=StudyQuery(patient_sex="F", study_description="cranial"),
         series=SeriesQuery(modality="MR", series_description="t1"),
     )
 
@@ -85,7 +85,7 @@ def test_execute_search_filters_results() -> None:
 def test_execute_search_relaxes_description_on_empty_results() -> None:
     client = FakeDicomClient([], {})
     criteria = SearchCriteria(
-        study=StudyQuery(study_description="RM fetal", modality_in_study="MR")
+        study=StudyQuery(study_description="MR fetal", modality_in_study="MR")
     )
 
     execute_search(criteria, query_client=client)
@@ -100,11 +100,11 @@ def test_execute_search_accepts_wildcard_description() -> None:
         {
             "StudyInstanceUID": "1",
             "AccessionNumber": "ACC001",
-            "StudyDescription": "RESSONANCIA MAGNETICA DE CRANIO",
+            "StudyDescription": "MAGNETIC RESONANCE OF CRANIAL",
         }
     ]
     client = FakeDicomClient(studies, {})
-    criteria = SearchCriteria(study=StudyQuery(study_description="*cranio"))
+    criteria = SearchCriteria(study=StudyQuery(study_description="*cranial"))
 
     result = execute_search(criteria, query_client=client)
 
@@ -113,12 +113,12 @@ def test_execute_search_accepts_wildcard_description() -> None:
 
 def test_execute_search_applies_patient_name_wildcard() -> None:
     client = FakeDicomClient([], {})
-    criteria = SearchCriteria(study=StudyQuery(patient_name="Paciente Teste"))
+    criteria = SearchCriteria(study=StudyQuery(patient_name="Test Patient"))
 
     execute_search(criteria, query_client=client)
 
     assert client.study_calls
-    assert client.study_calls[0]["patient_name"] == "*Paciente*Teste*"
+    assert client.study_calls[0]["patient_name"] == "*Test*Patient*"
 
 
 def test_execute_search_filters_by_patient_name() -> None:
@@ -126,11 +126,11 @@ def test_execute_search_filters_by_patient_name() -> None:
         {
             "StudyInstanceUID": "1",
             "AccessionNumber": "ACC001",
-            "PatientName": "PACIENTE^TESTE",
+            "PatientName": "TEST^PATIENT",
         }
     ]
     client = FakeDicomClient(studies, {})
-    criteria = SearchCriteria(study=StudyQuery(patient_name="Paciente Teste"))
+    criteria = SearchCriteria(study=StudyQuery(patient_name="Test Patient"))
 
     result = execute_search(criteria, query_client=client)
 

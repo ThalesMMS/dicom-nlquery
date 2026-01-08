@@ -8,7 +8,7 @@ from dicom_nlquery.nl_parser import parse_nl_to_criteria
 
 @pytest.mark.integration
 def test_end_to_end_female_20_40_cranio(orthanc_with_data, fake_llm_female_cranio):
-    criteria = parse_nl_to_criteria("mulheres 20 a 40 cranio", fake_llm_female_cranio)
+    criteria = parse_nl_to_criteria("women 20 to 40 cranial", fake_llm_female_cranio)
     result = execute_search(
         criteria,
         orthanc_with_data["client"],
@@ -20,7 +20,7 @@ def test_end_to_end_female_20_40_cranio(orthanc_with_data, fake_llm_female_crani
 
 @pytest.mark.integration
 def test_end_to_end_no_match(orthanc_with_data, fake_llm_no_match):
-    criteria = parse_nl_to_criteria("sem resultados", fake_llm_no_match)
+    criteria = parse_nl_to_criteria("no results", fake_llm_no_match)
     result = execute_search(
         criteria,
         orthanc_with_data["client"],

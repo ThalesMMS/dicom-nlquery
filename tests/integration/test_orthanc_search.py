@@ -38,4 +38,4 @@ def test_cfind_series_returns_series(orthanc_with_data):
         if series.get("SeriesDescription")
     }
 
-    assert "AX T1 CRANIO" in descriptions
+    assert "AX T1 CRANIAL" in descriptions

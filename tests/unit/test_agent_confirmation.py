@@ -84,7 +84,7 @@ def test_agent_requires_confirmation_before_tools() -> None:
         require_confirmation=True,
     )
 
-    response = agent.run("Mover estudo do paciente 123 para dest")
+    response = agent.run("Move study for patient 123 to dest")
 
     assert "Confirm" in response
     assert client.calls == []

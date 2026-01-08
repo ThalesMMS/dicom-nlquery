@@ -18,9 +18,9 @@ def test_search_criteria_accepts_patient_filter() -> None:
 
 
 def test_search_criteria_accepts_patient_name() -> None:
-    criteria = SearchCriteria(study=StudyQuery(patient_name="PACIENTE TESTE"))
+    criteria = SearchCriteria(study=StudyQuery(patient_name="TEST PATIENT"))
 
-    assert criteria.study.patient_name == "PACIENTE TESTE"
+    assert criteria.study.patient_name == "TEST PATIENT"
 
 
 def test_study_query_validates_sex() -> None:
@@ -30,7 +30,7 @@ def test_study_query_validates_sex() -> None:
 
 def test_series_query_accepts_filters() -> None:
     criteria = SearchCriteria(
-        study=StudyQuery(study_description="cranio"),
+        study=StudyQuery(study_description="cranial"),
         series=SeriesQuery(modality="MR", series_description="AX T1"),
     )
 
@@ -39,6 +39,6 @@ def test_series_query_accepts_filters() -> None:
 
 
 def test_query_studies_modality_accepts_extra_text() -> None:
-    args = QueryStudiesArgs.model_validate({"modality_in_study": "RM com contraste"})
+    args = QueryStudiesArgs.model_validate({"modality_in_study": "MRI with contrast"})
 
     assert args.modality_in_study == "MR"

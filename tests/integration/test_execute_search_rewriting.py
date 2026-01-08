@@ -18,10 +18,10 @@ def test_execute_search_rewriting_feto_vs_fetal(
     fake_llm_fetal,
 ):
     pipeline_config = SearchPipelineConfig(max_attempts=6, max_rewrites=6)
-    lexicon_config = LexiconConfig(synonyms={"feto": ["fetal", "gestacao"]})
+    lexicon_config = LexiconConfig(synonyms={"fetus": ["fetal", "pregnancy"]})
 
-    criteria_feto = parse_nl_to_criteria("rm de feto", fake_llm_feto)
-    criteria_fetal = parse_nl_to_criteria("rm fetal", fake_llm_fetal)
+    criteria_feto = parse_nl_to_criteria("mr for fetus", fake_llm_feto)
+    criteria_fetal = parse_nl_to_criteria("fetal mr", fake_llm_fetal)
 
     result_feto = execute_search(
         criteria_feto,

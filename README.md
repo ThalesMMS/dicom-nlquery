@@ -1,6 +1,6 @@
 # dicom-nlquery
 
-Natural language DICOM search (PT-BR) with an LLM-driven query pipeline.
+Natural language DICOM search (EN) with an LLM-driven query pipeline.
 
 This repo also contains `dicom-mcp`. `dicom-nlquery` delegates DICOM queries to
 the `dicom-mcp` server (stdio transport), so the LLM only builds query params and
@@ -35,19 +35,19 @@ cd dicom-nlquery
 docker compose -f tests/docker-compose.yml up -d
 
 # dry-run (no PACS query)
-dicom-nlquery dry-run "mulheres de 20 a 40 anos com cranio"
+dicom-nlquery dry-run "women ages 20 to 40 with cranial MR"
 
 # execute (C-FIND)
 dicom-nlquery execute --date-range 20190101-20210101 \
-  "mulheres de 20 a 40 anos com cranio"
+  "women ages 20 to 40 with cranial MR"
 ```
 
 `execute` resolves nodes via `list_dicom_nodes` and requires explicit confirmation
 before any MCP tool call (TTY required). If a destination node is present in the
 query, it runs `query_studies -> query_series -> move_study` after confirmation.
 
-Certifique-se de que `mcp.config_path` aponta para um dicom-mcp configurado
-com o node Orthanc.
+Make sure `mcp.config_path` points to a dicom-mcp configuration that includes
+the Orthanc node.
 
 ## dicom-mcp server
 
@@ -87,7 +87,7 @@ dicom-mcp to C-MOVE the first matched study to a destination node.
 cd dicom-nlquery
 
 python scripts/nlquery_move_study.py \
-  "mulheres de 20 a 40 anos com cranio" \
+  "women ages 20 to 40 with cranial MR" \
   --mcp-config ../dicom-mcp/configuration.yaml \
   --source-node orthanc --destination-node radiant \
   --date-range 20100101-20991231
@@ -120,7 +120,7 @@ search_pipeline:
   wildcard_modes: ["contains", "token_chain", "startswith"]
 
 lexicon:
-  path: "configs/lexicon.pt-BR.yaml"
+  path: "configs/lexicon.en-US.yaml"
 
 rag:
   enable: false
@@ -143,18 +143,18 @@ resolver:
   enabled: true
   require_confirmation: true
   confirmation:
-    accept_tokens: ["sim", "s", "yes", "y"]
-    reject_tokens: ["nao", "não", "n", "no"]
+    accept_tokens: ["yes", "y"]
+    reject_tokens: ["no", "n"]
     prompt_template: |
-      Modo: {mode}
-      Origem: {source_node}
-      Destino: {destination_node}
-      Filtros:
+      Mode: {mode}
+      Source: {source_node}
+      Destination: {destination_node}
+      Filters:
       {filters}
-      Confirmar? ({accept_tokens}/{reject_tokens})
-    invalid_response: "Resposta invalida. Use: {accept_tokens} ou {reject_tokens}."
-    correction_prompt: "Digite a consulta corrigida:"
-    cancel_message: "Operacao cancelada."
+      Confirm? ({accept_tokens}/{reject_tokens})
+    invalid_response: "Invalid response. Use: {accept_tokens} or {reject_tokens}."
+    correction_prompt: "Enter the corrected query:"
+    cancel_message: "Operation cancelled."
     max_invalid_responses: 2
     max_rejections: 2
 ```
@@ -162,7 +162,7 @@ resolver:
 ## Search Pipeline Guide
 
 The pipeline is deterministic and bounded to avoid query explosions while still
-handling lexical variation (ex.: "feto" vs "fetal"). Stages run in order until
+handling lexical variation (e.g., "fetus" vs "fetal"). Stages run in order until
 results are found or guardrails stop further attempts.
 
 1) **Structured-first**
@@ -207,19 +207,19 @@ full stats.
 
 ```bash
 # dry-run
-dicom-nlquery dry-run "mulheres de 30 anos com cranio"
+dicom-nlquery dry-run "women age 30 with cranial MR"
 
 # execute with JSON output
-dicom-nlquery execute --json "exames de cranio"
+dicom-nlquery execute --json "cranial exams"
 
 # custom date range
-dicom-nlquery execute --date-range 20240101-20241231 "exames de 2024"
+dicom-nlquery execute --date-range 20240101-20241231 "exams from 2024"
 
 # override node
-dicom-nlquery execute --node orthanc "todos os exames"
+dicom-nlquery execute --node orthanc "all exams"
 ```
 
-`--node` usa o dicom-mcp para trocar o node ativo antes da consulta.
+`--node` uses dicom-mcp to switch the active node before the query.
 
 ### Exit Codes
 
@@ -288,11 +288,11 @@ The generated YAML includes:
 
 ## Troubleshooting
 
-- "LLM nao disponivel": ensure Ollama is running (`ollama serve`) and
+- "LLM not available": ensure Ollama is running (`ollama serve`) and
   `llama3.2:latest` is installed.
-- "Falha na associacao DICOM": check AE titles, host/port, firewall, and
+- "DICOM association failed": check AE titles, host/port, firewall, and
   Orthanc `DicomModalities` entries.
-- "Nenhum resultado": expand the date range and validate criteria with
+- "No results": expand the date range and validate criteria with
   `dry-run`.
 
 ## API Reference
@@ -303,7 +303,7 @@ from dicom_nlquery.dicom_search import execute_search
 from dicom_nlquery.nl_parser import parse_nl_to_criteria
 
 config = load_config("config.yaml")
-criteria = parse_nl_to_criteria("mulheres de 20 a 40 anos", config.llm)
+criteria = parse_nl_to_criteria("women ages 20 to 40", config.llm)
 result = execute_search(criteria, mcp_config=config.mcp)
 print(result.accession_numbers)
 ```

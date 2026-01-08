@@ -34,7 +34,7 @@ def apply_guardrails(
 
     if unlimited:
         log.warning(
-            "AVISO: Varredura ilimitada solicitada. Isso pode sobrecarregar o PACS."
+            "Warning: unlimited scan requested. This may overload the PACS."
         )
         return date_range, None
 

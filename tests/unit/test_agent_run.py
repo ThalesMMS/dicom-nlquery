@@ -70,7 +70,7 @@ def test_uid_propagation_allows_move() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=5)
 
-    response = agent.run("Mover estudo do paciente 123 para dest")
+    response = agent.run("Move study for patient 123 to dest")
 
     assert "C-MOVE" in response
     assert agent.state.selected_uid == "1.2.3"
@@ -116,7 +116,7 @@ def test_stringified_arguments_are_parsed() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=5)
 
-    response = agent.run("Mover estudo do paciente 123 para dest")
+    response = agent.run("Move study for patient 123 to dest")
 
     assert "C-MOVE" in response
     assert any(call[0] == "query_studies" for call in client.calls)
@@ -161,7 +161,7 @@ def test_destination_node_is_captured_for_move() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=5)
 
-    response = agent.run("Mover estudo do paciente 123 para dest")
+    response = agent.run("Move study for patient 123 to dest")
 
     assert "C-MOVE" in response
     assert ("move_study", "dest", "1.2.3") in client.calls
@@ -179,20 +179,20 @@ def test_protocol_violation_blocks_json_in_text() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=1)
 
-    response = agent.run("Buscar estudos")
+    response = agent.run("Search studies")
 
-    assert "ERRO DE PROTOCOLO" in response
+    assert "PROTOCOL ERROR" in response
     assert client.calls == []
 
 
 def test_missing_tool_call_when_required_is_blocked() -> None:
     client = FakeClient()
-    llm = FakeLLM([{"role": "assistant", "content": "Vou buscar agora."}])
+    llm = FakeLLM([{"role": "assistant", "content": "I will search now."}])
     agent = DicomAgent(llm, client, max_steps=1)
 
-    response = agent.run("Buscar estudos")
+    response = agent.run("Search studies")
 
-    assert "ERRO DE PROTOCOLO" in response
+    assert "PROTOCOL ERROR" in response
     assert client.calls == []
 
 
@@ -211,9 +211,9 @@ def test_query_series_before_search_is_blocked() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=1)
 
-    response = agent.run("Inspecionar series")
+    response = agent.run("Inspect series")
 
-    assert "ERRO DE PROTOCOLO" in response
+    assert "PROTOCOL ERROR" in response
     assert client.calls == []
 
 
@@ -232,9 +232,9 @@ def test_evidence_check_blocks_unmentioned_sex_filter() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=1)
 
-    response = agent.run("Buscar estudos de cranio")
+    response = agent.run("Search cranial studies")
 
-    assert "ERRO DE PROTOCOLO" in response
+    assert "PROTOCOL ERROR" in response
     assert "patient_sex" in response
     assert client.calls == []
 
@@ -258,12 +258,12 @@ def test_evidence_check_allows_lexicon_synonym() -> None:
         ]
     )
     lexicon = Lexicon()
-    lexicon.update({"feto": ["fetal"]})
+    lexicon.update({"fetus": ["fetal"]})
     agent = DicomAgent(llm, client, max_steps=1, lexicon=lexicon)
 
-    response = agent.run("Buscar RM de feto")
+    response = agent.run("Search MR for fetus")
 
-    assert "ERRO DE PROTOCOLO" not in response
+    assert "PROTOCOL ERROR" not in response
     assert client.calls
 
 
@@ -287,9 +287,9 @@ def test_move_without_search_blocked() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=1)
 
-    response = agent.run("Mover direto")
+    response = agent.run("Move directly")
 
-    assert "ERRO DE PROTOCOLO" in response
+    assert "PROTOCOL ERROR" in response
     assert client.calls == []
 
 
@@ -323,9 +323,9 @@ def test_multi_result_requires_explicit_uid() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=2)
 
-    response = agent.run("Buscar estudos do paciente 123")
+    response = agent.run("Search studies for patient 123")
 
-    assert "multiplos estudos" in response.lower()
+    assert "multiple studies" in response.lower()
 
 
 def test_inferred_study_date_blocked() -> None:
@@ -348,7 +348,7 @@ def test_inferred_study_date_blocked() -> None:
     )
     agent = DicomAgent(llm, client, max_steps=1)
 
-    response = agent.run("Buscar estudos")
+    response = agent.run("Search studies")
 
     assert "study_date" in response
     assert client.calls == []
@@ -394,6 +394,6 @@ def test_guardrail_date_range_allowed() -> None:
     agent = DicomAgent(llm, client, max_steps=3)
     agent.state.guardrail_date_range = "20000101-20001231"
 
-    response = agent.run("Buscar estudos")
+    response = agent.run("Search studies")
 
     assert "C-MOVE" in response

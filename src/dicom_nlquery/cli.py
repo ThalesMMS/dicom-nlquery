@@ -32,10 +32,10 @@ def _load_config(config_path: str):
         config = load_config(config_path)
     except FileNotFoundError as exc:
         raise click.ClickException(
-            f"Arquivo de configuracao nao encontrado: {config_path}"
+            f"Configuration file not found: {config_path}"
         ) from exc
     except (ValueError, ValidationError) as exc:
-        raise click.ClickException(f"Configuracao invalida: {exc}") from exc
+        raise click.ClickException(f"Invalid configuration: {exc}") from exc
 
     return config
 
@@ -63,7 +63,7 @@ def _validate_date_range(date_range: str | None) -> str | None:
     if date_range is None:
         return None
     if not re.match(r"^\d{8}-\d{8}$", date_range):
-        raise click.ClickException("date-range deve usar YYYYMMDD-YYYYMMDD")
+        raise click.ClickException("date-range must use YYYYMMDD-YYYYMMDD")
     return date_range
 
 
@@ -71,7 +71,7 @@ def _read_stdin_line() -> str:
     stream = click.get_text_stream("stdin")
     line = stream.readline()
     if not line:
-        raise click.ClickException("Confirmacao requerida, mas nenhuma entrada foi fornecida.")
+        raise click.ClickException("Confirmation required, but no input was provided.")
     return line.strip()
 
 
@@ -89,10 +89,10 @@ def _load_node_registry(mcp_config, log: logging.Logger) -> NodeRegistry:
         payload = anyio.run(_fetch_nodes)
     except Exception as exc:  # pragma: no cover - surfaced to CLI
         log.error("Failed to load node registry", extra={"extra_data": {"error": str(exc)}})
-        raise click.ClickException("Falha ao carregar list_dicom_nodes do MCP.") from exc
+        raise click.ClickException("Failed to load list_dicom_nodes from MCP.") from exc
     nodes = payload.get("nodes")
     if not isinstance(nodes, list):
-        raise click.ClickException("list_dicom_nodes retornou um formato invalido.")
+        raise click.ClickException("list_dicom_nodes returned an invalid format.")
     return NodeRegistry.from_tool_payload(nodes)
 
 
@@ -103,10 +103,10 @@ def _resolve_with_confirmation(
     if resolver_cfg is None or not resolver_cfg.enabled:
         return None, query
     if config.mcp is None:
-        raise click.ClickException("Erro: mcp.config_path nao configurado.")
+        raise click.ClickException("Error: mcp.config_path not configured.")
     if resolver_cfg.require_confirmation and not sys.stdin.isatty():
         raise click.ClickException(
-            "Confirmacao requerida, mas stdin nao e um TTY."
+            "Confirmation required, but stdin is not a TTY."
         )
     registry = _load_node_registry(config.mcp, log)
     llm = OllamaClient.from_config(config.llm)
@@ -121,12 +121,12 @@ def _resolve_with_confirmation(
             if rejection_attempts >= resolver_cfg.confirmation.max_rejections:
                 raise click.ClickException(resolver_cfg.confirmation.cancel_message)
             click.echo(
-                "Resolver: necessario esclarecer antes de executar. "
+                "Resolver: clarification required before executing. "
                 + ", ".join(result.unresolved)
             )
             if not sys.stdin.isatty():
                 raise click.ClickException(
-                    "Clarificacao requerida, mas stdin nao e um TTY."
+                    "Clarification required, but stdin is not a TTY."
                 )
             click.echo(resolver_cfg.confirmation.correction_prompt)
             current_query = _read_stdin_line()
@@ -166,9 +166,9 @@ def _execute_move(
     log: logging.Logger,
 ) -> dict[str, object]:
     if config.mcp is None:
-        raise click.ClickException("Erro: mcp.config_path nao configurado.")
+        raise click.ClickException("Error: mcp.config_path not configured.")
     if not request.destination_node:
-        raise click.ClickException("Destino nao informado para move.")
+        raise click.ClickException("Destination not provided for move.")
 
     effective_date_range, effective_max_studies = apply_guardrails(
         config.guardrails,
@@ -191,24 +191,24 @@ def _execute_move(
                 limit=effective_max_studies,
             )
             if not isinstance(studies, list):
-                raise click.ClickException("query_studies retornou formato invalido.")
+                raise click.ClickException("query_studies returned invalid format.")
             if not studies:
-                return {"success": False, "message": "Nenhum estudo encontrado."}
+                return {"success": False, "message": "No studies found."}
             if len(studies) > 1:
                 raise click.ClickException(
-                    "Multiplos estudos encontrados. Refine a busca para mover apenas um estudo."
+                    "Multiple studies found. Refine the search to move only one study."
                 )
             study = studies[0]
             uid = study.get("StudyInstanceUID") or study.get("study_instance_uid")
             if not uid:
-                raise click.ClickException("StudyInstanceUID nao encontrado no resultado.")
+                raise click.ClickException("StudyInstanceUID not found in result.")
             await session.query_series(study_instance_uid=uid)
             result = await session.move_study(
                 destination_node=request.destination_node,
                 study_instance_uid=uid,
             )
             if not isinstance(result, dict):
-                return {"success": False, "message": "Resposta invalida do move_study."}
+                return {"success": False, "message": "Invalid response from move_study."}
             return result
 
     return anyio.run(_run_move)
@@ -222,16 +222,16 @@ def _execute_move(
     default="config.yaml",
     type=click.Path(path_type=Path),
     show_default=True,
-    help="Arquivo de configuracao",
+    help="Configuration file",
 )
-@click.option("--node", "-n", "node", default=None, help="Node do dicom-mcp para consulta")
-@click.option("--verbose", "-v", is_flag=True, help="Ativa logs verbosos")
+@click.option("--node", "-n", "node", default=None, help="dicom-mcp node for query")
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logs")
 @click.option(
     "--llm-debug",
     is_flag=True,
-    help="Mostra o JSON extraido da LLM e os criterios finais (pode conter PHI).",
+    help="Show LLM-extracted JSON and final criteria (may contain PHI).",
 )
-@click.option("--json", "-j", "json_output", is_flag=True, help="Saida JSON")
+@click.option("--json", "-j", "json_output", is_flag=True, help="JSON output")
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -257,7 +257,7 @@ def main(
     "config_path_override",
     default=None,
     type=click.Path(path_type=Path),
-    help="Arquivo de configuracao",
+    help="Configuration file",
 )
 @click.argument("query")
 @click.pass_context
@@ -290,19 +290,19 @@ def dry_run(ctx: click.Context, config_path_override: Path | None, query: str) -
     "--date-range",
     "date_range",
     default=None,
-    help="Intervalo de datas no formato YYYYMMDD-YYYYMMDD",
+    help="Date range in YYYYMMDD-YYYYMMDD format",
 )
 @click.option(
     "--max-studies",
     "max_studies",
     default=None,
     type=int,
-    help="Numero maximo de estudos para varrer",
+    help="Maximum number of studies to scan",
 )
 @click.option(
     "--unlimited",
     is_flag=True,
-    help="Remove limites de guardrails (nao recomendado)",
+    help="Remove guardrail limits (not recommended)",
 )
 @click.argument("query")
 @click.pass_context
@@ -318,12 +318,12 @@ def execute(
     try:
         config = _load_config(ctx.obj["config_path"])
     except click.ClickException as exc:
-        click.echo(f"Erro: {exc.message}", err=True)
+        click.echo(f"Error: {exc.message}", err=True)
         ctx.exit(3)
 
     if config.mcp is None:
         click.echo(
-            "Erro: mcp.config_path nao configurado. Ajuste o config.yaml para o dicom-mcp.",
+            "Error: mcp.config_path not configured. Update config.yaml for dicom-mcp.",
             err=True,
         )
         ctx.exit(3)
@@ -331,11 +331,11 @@ def execute(
     try:
         date_range = _validate_date_range(date_range)
     except click.ClickException as exc:
-        click.echo(f"Erro: {exc.message}", err=True)
+        click.echo(f"Error: {exc.message}", err=True)
         ctx.exit(3)
 
     if max_studies is not None and max_studies <= 0:
-        click.echo("Erro: max-studies deve ser maior que zero", err=True)
+        click.echo("Error: max-studies must be greater than zero", err=True)
         ctx.exit(3)
 
     try:
@@ -358,12 +358,12 @@ def execute(
                         failed = move_result.get("failed")
                         warning = move_result.get("warning")
                         click.echo(
-                            "C-MOVE concluido. "
+                            "C-MOVE completed. "
                             f"Completed={completed} Failed={failed} Warning={warning}"
                         )
                     else:
                         click.echo(
-                            f"Falha no C-MOVE: {move_result.get('message', 'Erro desconhecido')}",
+                            f"C-MOVE failed: {move_result.get('message', 'Unknown error')}",
                             err=True,
                         )
                 ctx.exit(0 if move_result.get("success") else 2)
@@ -376,7 +376,7 @@ def execute(
                 debug=ctx.obj["llm_debug"],
             )
     except Exception as exc:
-        click.echo(f"Erro: {exc}", err=True)
+        click.echo(f"Error: {exc}", err=True)
         ctx.exit(3)
 
     try:
@@ -396,7 +396,7 @@ def execute(
             node_name=ctx.obj["node"],
         )
     except Exception as exc:
-        click.echo(f"Erro: {exc}", err=True)
+        click.echo(f"Error: {exc}", err=True)
         ctx.exit(2)
 
     if ctx.obj["json_output"]:
@@ -409,25 +409,25 @@ def execute(
             for study_uid in result.study_instance_uids:
                 click.echo(study_uid)
         else:
-            click.echo("Nenhum estudo encontrado com os criterios especificados.")
-            click.echo(f"Estudos avaliados: {result.stats.studies_scanned}")
+            click.echo("No studies found with the specified criteria.")
+            click.echo(f"Studies evaluated: {result.stats.studies_scanned}")
             if result.stats.date_range_applied:
-                click.echo(f"Data range: {result.stats.date_range_applied}")
+                click.echo(f"Date range: {result.stats.date_range_applied}")
             if result.stats.stages_tried:
                 click.echo(
-                    "Estagios tentados: " + ", ".join(result.stats.stages_tried)
+                    "Stages tried: " + ", ".join(result.stats.stages_tried)
                 )
             if result.stats.rewrites_tried:
                 shown = ", ".join(result.stats.rewrites_tried[:3])
-                click.echo(f"Reescritas tentadas: {shown}")
+                click.echo(f"Rewrites tried: {shown}")
             if result.stats.limit_reached:
                 click.echo(
-                    "Limite de busca atingido. Ajuste --unlimited ou max-studies."
+                    "Search limit reached. Adjust --unlimited or max-studies."
                 )
             if config.rag.enable:
                 suggestions = get_rag_suggestions(query, config.rag, log)
                 if suggestions:
                     shown = ", ".join(suggestions[:3])
-                    click.echo(f"Sugestoes RAG: {shown}")
+                    click.echo(f"RAG suggestions: {shown}")
 
     ctx.exit(0 if result.accession_numbers else 1)

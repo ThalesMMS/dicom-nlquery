@@ -75,7 +75,7 @@ class OllamaClient:
             "stream": False,
             "options": {"temperature": 0}
         }
-        # Endpoint nativo do Ollama compatível com OpenAI
+        # Native Ollama endpoint compatible with OpenAI.
         response = self._client.post(f"{self.base_url}/api/chat", json=payload)
         response.raise_for_status()
         message = response.json().get("message", {})
