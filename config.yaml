@@ -17,7 +17,17 @@ search_pipeline:
   max_rewrites: 10
   series_probe_enabled: false
   series_probe_limit: 50
+  server_limit_studies: 500
+  server_limit_series: 2000
   wildcard_modes: ["contains", "token_chain", "startswith"]
+  telemetry:
+    enabled: true
+
+mcp:
+  tool_timeout_seconds: 30
+  retry:
+    max_attempts: 3
+    backoff_seconds: [0.5, 1.0, 2.0]
 
 lexicon:
   path: "configs/lexicon.pt-BR.yaml"
@@ -38,3 +48,22 @@ ranking:
 mcp:
   command: "dicom-mcp"
   config_path: "../dicom-mcp/configuration.yaml"
+
+resolver:
+  enabled: true
+  require_confirmation: true
+  confirmation:
+    accept_tokens: ["sim", "s", "yes", "y"]
+    reject_tokens: ["nao", "não", "n", "no"]
+    prompt_template: |
+      Modo: {mode}
+      Origem: {source_node}
+      Destino: {destination_node}
+      Filtros:
+      {filters}
+      Confirmar? ({accept_tokens}/{reject_tokens})
+    invalid_response: "Resposta invalida. Use: {accept_tokens} ou {reject_tokens}."
+    correction_prompt: "Digite a consulta corrigida:"
+    cancel_message: "Operacao cancelada."
+    max_invalid_responses: 2
+    max_rejections: 2

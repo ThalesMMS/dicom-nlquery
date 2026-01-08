@@ -9,7 +9,14 @@ from typing import Iterable
 
 from .logging_config import mask_phi
 from .lexicon import Lexicon, normalize_text
-from .models import RankingConfig, SearchCriteria, SearchPipelineConfig, SearchResult, SearchStats
+from .models import (
+    RankingConfig,
+    SearchCriteria,
+    SearchPipelineConfig,
+    SearchResult,
+    SearchStats,
+    StageMetrics,
+)
 from .search_utils import (
     _build_series_args,
     _build_study_args,
@@ -179,6 +186,29 @@ def _record_stage(stats: SearchStats, stage: str) -> None:
     stats.stages_tried.append(stage)
 
 
+def _record_stage_metrics(
+    stats: SearchStats,
+    stage: str,
+    latency_seconds: float,
+    studies_returned: int,
+    studies_matched: int,
+    success: bool,
+    config: SearchPipelineConfig,
+) -> None:
+    if not config.telemetry.enabled:
+        return
+    metrics = stats.stage_metrics.get(stage)
+    if metrics is None:
+        metrics = StageMetrics()
+    metrics.attempts += 1
+    metrics.latency_seconds += latency_seconds
+    metrics.studies_returned += studies_returned
+    metrics.studies_matched += studies_matched
+    if success:
+        metrics.successes += 1
+    stats.stage_metrics[stage] = metrics
+
+
 def run_pipeline_sync(
     criteria: SearchCriteria,
     query_client: object,
@@ -214,6 +244,7 @@ def run_pipeline_sync(
         rewrites_tried=[],
     )
     accession_numbers: list[str] = []
+    study_instance_uids: list[str] = []
     seen_uids: set[str] = set()
     has_series_filters = _has_series_filters(criteria)
     series_args = _build_series_args(criteria)
@@ -228,7 +259,11 @@ def run_pipeline_sync(
         stats.attempts_run += 1
         _record_stage(stats, attempt.stage)
         _record_rewrite(stats, attempt.rewrite)
-        studies = list(query_studies(**attempt.study_args))
+        attempt_start = time.time()
+        study_args = {**attempt.study_args}
+        if config.server_limit_studies is not None:
+            study_args["limit"] = config.server_limit_studies
+        studies = list(query_studies(**study_args))
         scanned_this_attempt = 0
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
@@ -241,7 +276,8 @@ def run_pipeline_sync(
                 },
             )
 
-        attempt_matches: list[tuple[object, str]] = []
+        attempt_accession_matches: list[tuple[object, str]] = []
+        attempt_uid_matches: list[tuple[object, str]] = []
         for study in studies:
             if _deadline_reached(deadline):
                 stats.limit_reached = True
@@ -294,7 +330,10 @@ def run_pipeline_sync(
                     raise RuntimeError("query_client lacks query_series()")
                 if config.series_probe_limit <= 0:
                     continue
-                series_list = list(query_series(study_instance_uid=study_uid))
+                series_kwargs = {"study_instance_uid": study_uid}
+                if config.server_limit_series is not None:
+                    series_kwargs["limit"] = config.server_limit_series
+                series_list = list(query_series(**series_kwargs))
                 if not series_list:
                     stats.studies_filtered_series += 1
                     continue
@@ -334,7 +373,10 @@ def run_pipeline_sync(
                 if not study_uid:
                     stats.studies_filtered_series += 1
                     continue
-                series_list = list(query_series(study_instance_uid=study_uid, **series_args))
+                series_kwargs = {"study_instance_uid": study_uid, **series_args}
+                if config.server_limit_series is not None:
+                    series_kwargs["limit"] = config.server_limit_series
+                series_list = list(query_series(**series_kwargs))
                 if not series_list or not any(
                     _series_matches_criteria(item, criteria) for item in series_list
                 ):
@@ -342,18 +384,37 @@ def run_pipeline_sync(
                     continue
 
             study_uid = _get_attr(study, "StudyInstanceUID")
-            if study_uid and study_uid in seen_uids:
+            study_uid_str = str(study_uid) if study_uid else ""
+            if study_uid_str and study_uid_str in seen_uids:
                 continue
-            if study_uid:
-                seen_uids.add(str(study_uid))
+            if study_uid_str:
+                seen_uids.add(study_uid_str)
             stats.studies_matched += 1
             accession = _get_attr(study, "AccessionNumber")
             if accession:
-                attempt_matches.append((study, str(accession)))
+                attempt_accession_matches.append((study, str(accession)))
+            if study_uid_str:
+                attempt_uid_matches.append((study, study_uid_str))
 
-        if attempt_matches:
+        attempt_success = bool(attempt_uid_matches)
+        _record_stage_metrics(
+            stats,
+            attempt.stage,
+            time.time() - attempt_start,
+            len(studies),
+            len(attempt_uid_matches),
+            attempt_success,
+            config,
+        )
+
+        if attempt_success:
             accession_numbers = _rank_accessions(
-                attempt_matches,
+                attempt_accession_matches,
+                criteria.study.study_description or attempt.description_override,
+                ranking,
+            )
+            study_instance_uids = _rank_study_uids(
+                attempt_uid_matches,
                 criteria.study.study_description or attempt.description_override,
                 ranking,
             )
@@ -365,7 +426,11 @@ def run_pipeline_sync(
 
     stats.execution_time_seconds = time.time() - start_time
     log.info("DICOM search completed", extra={"extra_data": stats.model_dump()})
-    return SearchResult(accession_numbers=accession_numbers, stats=stats)
+    return SearchResult(
+        accession_numbers=accession_numbers,
+        study_instance_uids=study_instance_uids,
+        stats=stats,
+    )
 
 
 async def run_pipeline_async(
@@ -395,6 +460,7 @@ async def run_pipeline_async(
         rewrites_tried=[],
     )
     accession_numbers: list[str] = []
+    study_instance_uids: list[str] = []
     seen_uids: set[str] = set()
     has_series_filters = _has_series_filters(criteria)
     series_args = _build_series_args(criteria)
@@ -409,7 +475,11 @@ async def run_pipeline_async(
         stats.attempts_run += 1
         _record_stage(stats, attempt.stage)
         _record_rewrite(stats, attempt.rewrite)
-        studies = list(await query_client.query_studies(**attempt.study_args))
+        attempt_start = time.time()
+        study_args = {**attempt.study_args}
+        if config.server_limit_studies is not None:
+            study_args["limit"] = config.server_limit_studies
+        studies = list(await query_client.query_studies(**study_args))
         scanned_this_attempt = 0
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
@@ -422,7 +492,8 @@ async def run_pipeline_async(
                 },
             )
 
-        attempt_matches: list[tuple[object, str]] = []
+        attempt_accession_matches: list[tuple[object, str]] = []
+        attempt_uid_matches: list[tuple[object, str]] = []
         for study in studies:
             if _deadline_reached(deadline):
                 stats.limit_reached = True
@@ -473,11 +544,10 @@ async def run_pipeline_async(
                     continue
                 if config.series_probe_limit <= 0:
                     continue
-                series_list = list(
-                    await query_client.query_series(
-                        study_instance_uid=study_uid,
-                    )
-                )
+                series_kwargs = {"study_instance_uid": study_uid}
+                if config.server_limit_series is not None:
+                    series_kwargs["limit"] = config.server_limit_series
+                series_list = list(await query_client.query_series(**series_kwargs))
                 if not series_list:
                     stats.studies_filtered_series += 1
                     continue
@@ -515,12 +585,10 @@ async def run_pipeline_async(
                 if not study_uid:
                     stats.studies_filtered_series += 1
                     continue
-                series_list = list(
-                    await query_client.query_series(
-                        study_instance_uid=study_uid,
-                        **series_args,
-                    )
-                )
+                series_kwargs = {"study_instance_uid": study_uid, **series_args}
+                if config.server_limit_series is not None:
+                    series_kwargs["limit"] = config.server_limit_series
+                series_list = list(await query_client.query_series(**series_kwargs))
                 if not series_list or not any(
                     _series_matches_criteria(item, criteria) for item in series_list
                 ):
@@ -528,18 +596,37 @@ async def run_pipeline_async(
                     continue
 
             study_uid = _get_attr(study, "StudyInstanceUID")
-            if study_uid and study_uid in seen_uids:
+            study_uid_str = str(study_uid) if study_uid else ""
+            if study_uid_str and study_uid_str in seen_uids:
                 continue
-            if study_uid:
-                seen_uids.add(str(study_uid))
+            if study_uid_str:
+                seen_uids.add(study_uid_str)
             stats.studies_matched += 1
             accession = _get_attr(study, "AccessionNumber")
             if accession:
-                attempt_matches.append((study, str(accession)))
+                attempt_accession_matches.append((study, str(accession)))
+            if study_uid_str:
+                attempt_uid_matches.append((study, study_uid_str))
 
-        if attempt_matches:
+        attempt_success = bool(attempt_uid_matches)
+        _record_stage_metrics(
+            stats,
+            attempt.stage,
+            time.time() - attempt_start,
+            len(studies),
+            len(attempt_uid_matches),
+            attempt_success,
+            config,
+        )
+
+        if attempt_success:
             accession_numbers = _rank_accessions(
-                attempt_matches,
+                attempt_accession_matches,
+                criteria.study.study_description or attempt.description_override,
+                ranking,
+            )
+            study_instance_uids = _rank_study_uids(
+                attempt_uid_matches,
                 criteria.study.study_description or attempt.description_override,
                 ranking,
             )
@@ -551,7 +638,11 @@ async def run_pipeline_async(
 
     stats.execution_time_seconds = time.time() - start_time
     log.info("DICOM search completed", extra={"extra_data": stats.model_dump()})
-    return SearchResult(accession_numbers=accession_numbers, stats=stats)
+    return SearchResult(
+        accession_numbers=accession_numbers,
+        study_instance_uids=study_instance_uids,
+        stats=stats,
+    )
 
 
 def _score_similarity(original: str, candidate: str) -> float:
@@ -607,6 +698,27 @@ def _rank_accessions(
     return _dedupe_accessions([(None, accession) for _, accession in scored])
 
 
+def _rank_study_uids(
+    matches: list[tuple[object, str]],
+    query_text: str | None,
+    ranking: RankingConfig,
+) -> list[str]:
+    if not ranking.enabled:
+        return _dedupe_uids(matches)
+    query = query_text or ""
+    today = date.today()
+    scored: list[tuple[float, str]] = []
+    for study, study_uid in matches:
+        description = str(_get_attr(study, "StudyDescription") or "")
+        study_date = str(_get_attr(study, "StudyDate") or "")
+        text_score = _text_match_score(query, description)
+        recency_score = _recency_score(study_date, today)
+        score = ranking.text_match_weight * text_score + ranking.recency_weight * recency_score
+        scored.append((score, study_uid))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return _dedupe_uids([(None, study_uid) for _, study_uid in scored])
+
+
 def _text_match_score(query: str, description: str) -> float:
     if not query or not description:
         return 0.0
@@ -654,4 +766,17 @@ def _dedupe_accessions(matches: list[tuple[object | None, str]]) -> list[str]:
             continue
         seen.add(accession)
         ordered.append(accession)
+    return ordered
+
+
+def _dedupe_uids(matches: list[tuple[object | None, str]]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _, uid in matches:
+        if not uid:
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        ordered.append(uid)
     return ordered

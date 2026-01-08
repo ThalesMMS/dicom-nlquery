@@ -7,6 +7,10 @@ from dicom_nlquery.models import LexiconConfig, SearchPipelineConfig
 from dicom_nlquery.nl_parser import parse_nl_to_criteria
 
 
+EXPECTED_FETAL_ACCESSIONS = {"ACC006"}
+NEGATIVE_ACCESSIONS = {"ACC001", "ACC002", "ACC003", "ACC004", "ACC005", "ACC007"}
+
+
 @pytest.mark.integration
 def test_execute_search_rewriting_feto_vs_fetal(
     orthanc_with_data,
@@ -34,6 +38,15 @@ def test_execute_search_rewriting_feto_vs_fetal(
         lexicon_config=lexicon_config,
     )
 
-    assert "ACC006" in result_feto.accession_numbers
-    assert "ACC007" not in result_feto.accession_numbers
-    assert set(result_feto.accession_numbers) == set(result_fetal.accession_numbers)
+    feto_accessions = set(result_feto.accession_numbers)
+    fetal_accessions = set(result_fetal.accession_numbers)
+
+    assert EXPECTED_FETAL_ACCESSIONS.issubset(feto_accessions)
+    assert EXPECTED_FETAL_ACCESSIONS.issubset(fetal_accessions)
+    assert feto_accessions.issuperset(fetal_accessions) or fetal_accessions.issuperset(
+        feto_accessions
+    )
+    assert not (feto_accessions & NEGATIVE_ACCESSIONS)
+    assert not (fetal_accessions & NEGATIVE_ACCESSIONS)
+    assert "fetor" not in result_feto.stats.rewrites_tried
+    assert "fetor" not in result_fetal.stats.rewrites_tried

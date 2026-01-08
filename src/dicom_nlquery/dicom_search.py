@@ -183,7 +183,7 @@ async def _execute_with_mcp(
     node_name: str | None,
 ) -> SearchResult:
     server_params = build_stdio_server_params(mcp_config)
-    async with McpSession(server_params) as client:
+    async with McpSession(server_params, mcp_config=mcp_config) as client:
         if node_name:
             await client.switch_dicom_node(node_name)
         return await run_pipeline_async(

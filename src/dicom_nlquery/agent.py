@@ -5,14 +5,27 @@ import logging
 import re
 import unicodedata
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import ValidationError
 
 from .agent_tools import execute_tool, get_tools_schema
+from .confirmation import (
+    build_confirmation_message,
+    build_invalid_response_message,
+    classify_confirmation_response,
+)
 from .lexicon import Lexicon, normalize_text as lexicon_normalize_text
 from .llm_client import OllamaClient
-from .models import AgentPhase, AgentState, QueryStudiesArgs, ToolName, ToolResult
+from .models import (
+    AgentPhase,
+    AgentState,
+    ConfirmationConfig,
+    QueryStudiesArgs,
+    ResolvedRequest,
+    ToolName,
+    ToolResult,
+)
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +41,7 @@ REGRAS CRÍTICAS DE OPERAÇÃO:
 6. **UID REAL**: Não use placeholders (<...>).
 7. **SEXO**: Só use patient_sex se o usuário declarar explicitamente.
 8. **GUARDRAILS**: Date range padrão pode ser aplicado como proteção operacional.
+9. **NODES**: Identificadores de nodes vem de um registro externo e nao podem aparecer em filtros.
 """
 
 MAX_STEPS = 10
@@ -187,17 +201,29 @@ class DicomAgent:
         dicom_client: Any,
         max_steps: int = MAX_STEPS,
         lexicon: Lexicon | None = None,
+        resolver: Callable[[str], Any] | None = None,
+        confirmation_config: ConfirmationConfig | None = None,
+        require_confirmation: bool = True,
     ) -> None:
         self.llm = llm
         self.client = dicom_client
         self.max_steps = max_steps
         self._lexicon = lexicon
+        self._resolver = resolver
+        self._confirmation_config = confirmation_config or ConfirmationConfig()
+        self._require_confirmation = require_confirmation
         self.state = AgentState()
+        if self._resolver:
+            self.state.phase = AgentPhase.RESOLVE
         self.history = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._user_query: str | None = None
         self._destination_node: str | None = None
 
     def _allowed_tools(self) -> list[ToolName]:
+        if self.state.phase in {AgentPhase.RESOLVE, AgentPhase.CONFIRM}:
+            return []
+        if self.state.awaiting_confirmation:
+            return []
         if self.state.phase == AgentPhase.SEARCH:
             return [ToolName.QUERY_STUDIES]
         if self.state.phase == AgentPhase.INSPECT:
@@ -282,9 +308,101 @@ class DicomAgent:
             args["destination_node"] = self._destination_node
         return args
 
-    def run(self, user_query: str) -> str:
+    def _apply_resolved_request(self, request: ResolvedRequest) -> None:
+        self.state.resolved_request = request
+        self.state.search_filters = dict(request.filters)
+        if request.destination_node:
+            self._destination_node = request.destination_node
+
+    def _prime_history_from_request(self, request: ResolvedRequest) -> None:
+        payload = {
+            "query": self._user_query,
+            "source_node": request.source_node,
+            "destination_node": request.destination_node,
+            "filters": request.filters,
+        }
+        self.history.append(
+            {
+                "role": "user",
+                "content": (
+                    "SISTEMA: Pedido resolvido. Use apenas estas informacoes e filtros. "
+                    f"Dados: {json.dumps(payload, ensure_ascii=True)}"
+                ),
+            }
+        )
+
+    def _handle_resolution(self, user_query: str) -> str | None:
+        if not self._resolver:
+            return None
         self._user_query = user_query
-        self.history.append({"role": "user", "content": user_query})
+        result = self._resolver(user_query)
+        self.state.resolved_request = result.request
+        if result.unresolved:
+            self.state.resolved_request = None
+            self.state.awaiting_confirmation = False
+            self.state.phase = AgentPhase.RESOLVE
+            return "SISTEMA: Solicite esclarecimento. Itens pendentes: " + ", ".join(
+                result.unresolved
+            )
+        if self._require_confirmation:
+            self.state.awaiting_confirmation = True
+            self.state.phase = AgentPhase.CONFIRM
+            return build_confirmation_message(result.request, self._confirmation_config)
+        self._apply_resolved_request(result.request)
+        self.state.phase = AgentPhase.SEARCH
+        self._prime_history_from_request(result.request)
+        return None
+
+    def _handle_confirmation(self, user_query: str) -> str | None:
+        decision = classify_confirmation_response(user_query, self._confirmation_config)
+        log.debug(
+            "Confirmation decision",
+            extra={"extra_data": {"decision": decision}},
+        )
+        if decision == "accept":
+            self.state.awaiting_confirmation = False
+            self.state.phase = AgentPhase.SEARCH
+            if self.state.resolved_request is not None:
+                self._apply_resolved_request(self.state.resolved_request)
+                self._prime_history_from_request(self.state.resolved_request)
+            return None
+        if decision == "reject":
+            self.state.confirmation_rejections += 1
+            if (
+                self.state.confirmation_rejections
+                >= self._confirmation_config.max_rejections
+            ):
+                self.state.phase = AgentPhase.ERROR
+                return self._confirmation_config.cancel_message
+            self.state.awaiting_confirmation = False
+            self.state.resolved_request = None
+            self.state.phase = AgentPhase.RESOLVE
+            return self._confirmation_config.correction_prompt
+        self.state.confirmation_invalid_attempts += 1
+        if (
+            self.state.confirmation_invalid_attempts
+            >= self._confirmation_config.max_invalid_responses
+        ):
+            self.state.phase = AgentPhase.ERROR
+            return self._confirmation_config.cancel_message
+        return build_invalid_response_message(self._confirmation_config)
+
+    def run(self, user_query: str) -> str:
+        append_history = True
+        if self.state.phase == AgentPhase.CONFIRM:
+            message = self._handle_confirmation(user_query)
+            if message is not None:
+                return message
+            append_history = False
+        elif self.state.phase == AgentPhase.RESOLVE:
+            message = self._handle_resolution(user_query)
+            if message is not None:
+                return message
+            append_history = False
+
+        if append_history:
+            self._user_query = user_query
+            self.history.append({"role": "user", "content": user_query})
 
         for _ in range(self.max_steps):
             allowed_tools = self._allowed_tools()
@@ -335,6 +453,12 @@ class DicomAgent:
                 return _protocol_error("Arguments devem ser um objeto JSON.")
 
             arguments = self._apply_destination_node(tool_name, arguments)
+
+            if tool_name == ToolName.QUERY_STUDIES and self.state.resolved_request is not None:
+                resolved_filters = dict(self.state.resolved_request.filters)
+                if "study_instance_uid" in arguments:
+                    resolved_filters["study_instance_uid"] = arguments["study_instance_uid"]
+                arguments = resolved_filters
 
             if tool_name == ToolName.QUERY_STUDIES and self._user_query:
                 try:

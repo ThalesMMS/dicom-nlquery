@@ -81,3 +81,33 @@ def test_parser_strict_extracts_patient_name_from_query() -> None:
     criteria = parse_nl_to_criteria("exames de elaine", FakeLLM(), strict_evidence=True)
 
     assert criteria.study.patient_name == "ELAINE"
+
+
+def test_parser_strict_applies_pelvis_keyword() -> None:
+    class FakeLLM:
+        def chat(self, system_prompt: str, user_prompt: str) -> str:
+            return '{\"study\": {}, \"series\": {\"series_description\": \"*\"}}'
+
+    criteria = parse_nl_to_criteria(
+        "move pelvis exams from ORTHANC to RADIANT",
+        FakeLLM(),
+        strict_evidence=True,
+    )
+
+    assert criteria.study.study_description == "pelvis"
+    assert criteria.series is None
+
+
+def test_parser_strict_applies_pelvis_keyword_with_punctuation() -> None:
+    class FakeLLM:
+        def chat(self, system_prompt: str, user_prompt: str) -> str:
+            return '{\"study\": {}, \"series\": {\"series_description\": \"*\"}}'
+
+    criteria = parse_nl_to_criteria(
+        "move pelvis, exams from ORTHANC to RADIANT",
+        FakeLLM(),
+        strict_evidence=True,
+    )
+
+    assert criteria.study.study_description == "pelvis"
+    assert criteria.series is None

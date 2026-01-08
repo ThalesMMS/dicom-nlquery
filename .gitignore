@@ -10,3 +10,5 @@ htmlcov/
 .DS_Store
 dicom-nlquery.log
 dicom-mcp.log
+/tests/orthanc-storage
+/dicom-mcp/tests/orthanc.configuration.json/OrthancStorage

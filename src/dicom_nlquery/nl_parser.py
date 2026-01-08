@@ -82,6 +82,7 @@ STOPWORDS = {
     "nos",
     "nas",
 }
+BODY_PART_TERMS = {"pelvis", "bassin"}
 DATE_HINT_RE = re.compile(
     r"\b(hoje|ontem|semana(s)?|mes(es)?|dia(s)?|passad[ao]s?|ultim[ao]s?|recente(s)?|recentemente)\b"
 )
@@ -118,6 +119,27 @@ def _normalize_text(text: str) -> str:
 def _normalize_token(token: str) -> str:
     normalized = _normalize_text(token)
     return re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def _is_wildcard_only(value: str | None) -> bool:
+    if value is None:
+        return False
+    stripped = value.strip()
+    if not stripped:
+        return False
+    collapsed = stripped.replace(" ", "")
+    return bool(collapsed) and all(char in "*?" for char in collapsed)
+
+
+def _extract_body_part_from_query(query_norm: str) -> str | None:
+    tokens = [token for token in query_norm.split() if token]
+    for token in tokens:
+        normalized = _normalize_token(token)
+        if not normalized or normalized in STOPWORDS:
+            continue
+        if normalized in BODY_PART_TERMS:
+            return normalized
+    return None
 
 
 def _has_id_evidence(value: str, query_norm: str) -> bool:
@@ -266,6 +288,10 @@ def apply_evidence_guardrails(
     else:
         data = dict(criteria)
     study = dict(data.get("study") or {})
+    series = data.get("series")
+    if isinstance(series, dict):
+        if _is_wildcard_only(series.get("series_description")):
+            series["series_description"] = None
 
     if study.get("patient_id") and not _has_id_evidence(study["patient_id"], query_norm):
         study["patient_id"] = None
@@ -320,6 +346,12 @@ def apply_evidence_guardrails(
         match = DESTINATION_RE.search(query_norm)
         if match and _normalize_text(study["study_description"]) == match.group(1):
             study["study_description"] = None
+    if study.get("study_description") and _is_wildcard_only(study["study_description"]):
+        study["study_description"] = None
+    if not study.get("study_description"):
+        body_part = _extract_body_part_from_query(query_norm)
+        if body_part:
+            study["study_description"] = body_part
 
     has_study_filters = any(
         study.get(field)
@@ -339,7 +371,6 @@ def apply_evidence_guardrails(
         has_study_filters = True
 
     data["study"] = study
-    series = data.get("series")
     if isinstance(series, dict):
         if not any(
             series.get(field)
@@ -351,6 +382,8 @@ def apply_evidence_guardrails(
             )
         ):
             data["series"] = None
+        else:
+            data["series"] = series
 
     if not has_study_filters and data.get("series") is None:
         raise ValueError("Consulta nao especifica filtros validos.")

@@ -13,28 +13,109 @@ except Exception:  # pragma: no cover - optional typing support
     PersonName = None
 
 
-PHI_FIELDS = {"PatientName", "PatientID", "PatientBirthDate"}
+def _normalize_key(raw: object) -> str:
+    return "".join(char for char in str(raw).lower() if char.isalnum())
 
 
-def mask_phi(value: Any) -> Any:
+PHI_FIELDS = {
+    "AccessionNumber",
+    "MedicalRecordNumber",
+    "OtherPatientIDs",
+    "OtherPatientNames",
+    "PatientAddress",
+    "PatientBirthDate",
+    "PatientBirthName",
+    "PatientBirthTime",
+    "PatientComments",
+    "PatientID",
+    "PatientMotherBirthName",
+    "PatientName",
+    "PatientSSN",
+    "PatientSocialSecurityNumber",
+    "PatientTelephoneNumbers",
+}
+
+_PHI_KEY_NORMALIZED = {
+    *{_normalize_key(key) for key in PHI_FIELDS},
+    "accession",
+    "mrn",
+    "medicalrecordnumber",
+    "patientdateofbirth",
+    "patientdob",
+    "patientemail",
+    "patientmrn",
+    "patientphonenumber",
+    "patientphone",
+    "patienttelephonenumber",
+}
+
+_PATIENT_CONTAINER_KEYS = {"patient", "patients", "subject", "subjects"}
+_PATIENT_CHILD_KEYS = {
+    "address",
+    "birthdate",
+    "birthname",
+    "birthtime",
+    "comment",
+    "comments",
+    "dateofbirth",
+    "dob",
+    "email",
+    "id",
+    "identifier",
+    "medicalrecordnumber",
+    "mrn",
+    "motherbirthname",
+    "name",
+    "otherids",
+    "othernames",
+    "phone",
+    "phonenumber",
+    "socialsecuritynumber",
+    "ssn",
+    "telephone",
+    "telephonenumber",
+    "telephonenumbers",
+}
+
+
+def _should_mask_key(key: str, path: tuple[str, ...]) -> bool:
+    if not key:
+        return False
+    if key in _PHI_KEY_NORMALIZED:
+        return True
+    if any(part in _PATIENT_CONTAINER_KEYS for part in path):
+        return key in _PATIENT_CHILD_KEYS
+    return False
+
+
+def mask_phi(value: Any, path: tuple[str, ...] | None = None) -> Any:
+    if path is None:
+        path = ()
     if isinstance(value, dict):
         masked: dict[str, Any] = {}
+        normalized_path = tuple(_normalize_key(part) for part in path)
         for key, item in value.items():
-            if key in PHI_FIELDS and item:
+            key_norm = _normalize_key(key)
+            if _should_mask_key(key_norm, normalized_path) and item:
                 masked[key] = "***"
             else:
-                masked[key] = mask_phi(item)
+                masked[key] = mask_phi(item, path + (str(key),))
         return masked
     if MultiValue is not None and isinstance(value, MultiValue):
-        return [mask_phi(item) for item in value]
+        return [mask_phi(item, path) for item in value]
     if isinstance(value, (list, tuple, set)):
-        return [mask_phi(item) for item in value]
+        return [mask_phi(item, path) for item in value]
     if PersonName is not None and isinstance(value, PersonName):
         return "***"
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    if hasattr(value, "model_dump"):
+        try:
+            return mask_phi(value.model_dump(), path)
+        except Exception:
+            return str(value)
     return str(value)
 
 
@@ -67,9 +148,9 @@ class _ConsoleFormatter(logging.Formatter):
         if extra_data is None:
             return message
         try:
-            extra_json = json.dumps(extra_data, ensure_ascii=True)
+            extra_json = json.dumps(mask_phi(extra_data), ensure_ascii=True)
         except TypeError:
-            extra_json = str(extra_data)
+            extra_json = str(mask_phi(extra_data))
         return f"{message} | {extra_json}"
 
 

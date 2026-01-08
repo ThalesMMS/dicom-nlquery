@@ -1,0 +1,27 @@
+{
+    "Name": "TestOrthanc",
+    "HttpServerEnabled": true,
+    "HttpPort": 8042,
+    "DicomServerEnabled": true,
+    "DicomPort": 4242,
+    "DicomAet": "ORTHANC",
+    "RemoteAccessAllowed": true,
+    "AuthenticationEnabled": false,
+    "DicomAlwaysAllowEcho": true,
+    "DicomAlwaysAllowStore": true,
+    "DicomAlwaysAllowFind": true,
+    "DicomAlwaysAllowMove": true,
+    "DicomCheckModalityHost": true,
+    "DicomModalities": {
+        "MCPSCU": {
+            "AET": "MCPSCU",
+            "Host": "host.docker.internal",
+            "Port": 11112
+        },
+        "RADIANT": {
+            "AET": "RADIANT",
+            "Host": "host.docker.internal",
+            "Port": 11112
+        }
+    }
+}

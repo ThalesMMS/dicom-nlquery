@@ -4,14 +4,11 @@ services:
     ports:
       - "4242:4242"
       - "8042:8042"
+    volumes:
+      - ./orthanc-storage:/var/lib/orthanc/db
+      - ./orthanc.configuration.json:/etc/orthanc/orthanc.json
     environment:
-      ORTHANC__DICOM_AET: "ORTHANC"
-      ORTHANC__DICOM_CHECK_CALLED_AET: "false"
-      ORTHANC__DICOM_ALWAYS_ALLOW_FIND: "true"
-      ORTHANC__DICOM_ALWAYS_ALLOW_STORE: "true"
-      ORTHANC__DICOM_ALWAYS_ALLOW_ECHO: "true"
-      ORTHANC__DICOM_MODALITIES: "{\"NLQUERY\": {\"AET\": \"NLQUERY\", \"Host\": \"host.docker.internal\", \"Port\": 4242}, \"TESTSCU\": {\"AET\": \"TESTSCU\", \"Host\": \"host.docker.internal\", \"Port\": 4242}}"
-      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
       ORTHANC__AUTHENTICATION_ENABLED: "false"
-      ORTHANC__DICOM_PORT: "4242"
-      ORTHANC__HTTP_PORT: "8042"
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

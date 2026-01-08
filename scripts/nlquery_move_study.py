@@ -129,6 +129,7 @@ def _require_destination_node(args: argparse.Namespace) -> str:
 
 async def _move_studies(
     accessions: list[str],
+    study_uids: list[str],
     server_config: McpServerConfig,
     source_node: str | None,
     destination_node: str,
@@ -136,22 +137,29 @@ async def _move_studies(
     logger: logging.Logger,
 ) -> int:
     server_params = build_stdio_server_params(server_config)
-    async with McpSession(server_params) as client:
+    async with McpSession(server_params, mcp_config=server_config) as client:
         if source_node:
             await client.switch_dicom_node(source_node)
 
-        study_records = []
-        selected_records = {}
-        for accession in accessions:
-            studies = await client.query_studies(
-                accession_number=accession,
-                additional_attributes=["StudyInstanceUID", "PatientID"],
-            )
-            if not studies:
-                print(f"StudyInstanceUID nao encontrado para {accession}")
-                continue
-            for study in studies:
-                study_uid = study.get("StudyInstanceUID")
+        study_records: list[dict[str, str | None]] = []
+        selected_records: dict[str, dict[str, str | None]] = {}
+        if study_uids:
+            for study_uid in study_uids:
+                studies = await client.query_studies(
+                    study_instance_uid=study_uid,
+                    additional_attributes=["StudyInstanceUID", "PatientID", "AccessionNumber"],
+                )
+                if not studies:
+                    record = {
+                        "accession": None,
+                        "patient_id": None,
+                        "study_instance_uid": study_uid,
+                    }
+                    study_records.append(record)
+                    selected_records[study_uid] = record
+                    continue
+                study = studies[0]
+                accession = study.get("AccessionNumber")
                 patient_id = study.get("PatientID")
                 record = {
                     "accession": accession,
@@ -159,15 +167,34 @@ async def _move_studies(
                     "study_instance_uid": study_uid,
                 }
                 study_records.append(record)
-                if study_uid and accession not in selected_records:
-                    selected_records[accession] = record
+                selected_records[study_uid] = record
+        else:
+            for accession in accessions:
+                studies = await client.query_studies(
+                    accession_number=accession,
+                    additional_attributes=["StudyInstanceUID", "PatientID"],
+                )
+                if not studies:
+                    print(f"StudyInstanceUID nao encontrado para {accession}")
+                    continue
+                for study in studies:
+                    study_uid = study.get("StudyInstanceUID")
+                    patient_id = study.get("PatientID")
+                    record = {
+                        "accession": accession,
+                        "patient_id": patient_id,
+                        "study_instance_uid": study_uid,
+                    }
+                    study_records.append(record)
+                    if study_uid and accession not in selected_records:
+                        selected_records[accession] = record
 
         patient_accessions: dict[str | None, list[str]] = {}
         for record in study_records:
             patient_id = record["patient_id"]
             accession = record["accession"]
             patient_accessions.setdefault(patient_id, [])
-            if accession not in patient_accessions[patient_id]:
+            if accession and accession not in patient_accessions[patient_id]:
                 patient_accessions[patient_id].append(accession)
 
         result_tuples = [(pid, accs) for pid, accs in patient_accessions.items()]
@@ -188,20 +215,21 @@ async def _move_studies(
         for record in targets:
             accession = record["accession"]
             study_uid = record["study_instance_uid"]
+            label = accession or study_uid or "<unknown>"
             if not study_uid:
-                print(f"StudyInstanceUID ausente para {accession}")
+                print(f"StudyInstanceUID ausente para {label}")
                 continue
 
             move_result = await client.move_study(
                 destination_node=destination_node,
                 study_instance_uid=study_uid,
             )
-            print(f"Move {accession}: {move_result}")
+            print(f"Move {label}: {move_result}")
             logger.info(
                 "Move study result",
                 extra={
                     "extra_data": {
-                        "accession": accession,
+                        "accession": accession or "",
                         "success": move_result.get("success"),
                         "completed": move_result.get("completed"),
                         "failed": move_result.get("failed"),
@@ -404,7 +432,8 @@ def main() -> int:
     )
 
     accessions = list(dict.fromkeys(result.accession_numbers))
-    if not accessions:
+    study_uids = list(dict.fromkeys(result.study_instance_uids))
+    if not accessions and not study_uids:
         print("Nenhum estudo encontrado para mover.")
         return 1
 
@@ -412,6 +441,7 @@ def main() -> int:
         exit_code = anyio.run(
             _move_studies,
             accessions,
+            study_uids,
             mcp_config,
             source_node,
             destination_node,

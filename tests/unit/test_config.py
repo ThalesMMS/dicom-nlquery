@@ -41,6 +41,57 @@ def test_load_valid_config(tmp_path: Path) -> None:
     assert config.mcp.config_path == str(tmp_path / "dicom-mcp.yaml")
 
 
+def test_load_mcp_retry_settings(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        """
+        llm:
+          provider: "ollama"
+          base_url: "http://127.0.0.1:11434"
+          model: "llama3.2:latest"
+
+        mcp:
+          command: "dicom-mcp"
+          config_path: "dicom-mcp.yaml"
+          tool_timeout_seconds: 15
+          retry:
+            max_attempts: 2
+            backoff_seconds: [0.2, 0.4]
+          non_idempotent_tools: ["move_study", "move_series"]
+        """,
+    )
+
+    (tmp_path / "dicom-mcp.yaml").write_text("nodes: {}", encoding="utf-8")
+    config = load_config(config_path)
+
+    assert config.mcp is not None
+    assert config.mcp.tool_timeout_seconds == 15
+    assert config.mcp.retry.max_attempts == 2
+    assert config.mcp.retry.backoff_seconds == [0.2, 0.4]
+    assert config.mcp.non_idempotent_tools == ["move_study", "move_series"]
+
+
+def test_load_search_pipeline_limits(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        """
+        llm:
+          provider: "ollama"
+          base_url: "http://127.0.0.1:11434"
+          model: "llama3.2:latest"
+
+        search_pipeline:
+          server_limit_studies: 123
+          server_limit_series: 456
+        """,
+    )
+
+    config = load_config(config_path)
+
+    assert config.search_pipeline.server_limit_studies == 123
+    assert config.search_pipeline.server_limit_series == 456
+
+
 def test_load_invalid_config_missing_llm(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,

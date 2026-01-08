@@ -42,6 +42,10 @@ dicom-nlquery execute --date-range 20190101-20210101 \
   "mulheres de 20 a 40 anos com cranio"
 ```
 
+`execute` resolves nodes via `list_dicom_nodes` and requires explicit confirmation
+before any MCP tool call (TTY required). If a destination node is present in the
+query, it runs `query_studies -> query_series -> move_study` after confirmation.
+
 Certifique-se de que `mcp.config_path` aponta para um dicom-mcp configurado
 com o node Orthanc.
 
@@ -55,6 +59,7 @@ valid dicom-mcp YAML.
 
 The DICOM agent follows a deterministic, stateful pipeline:
 
+1. Resolve nodes via registry and request confirmation.
 1. `query_studies` to fetch candidate studies.
 2. If multiple results, the agent requires an explicit `study_instance_uid` selection.
 3. `query_series` to inspect metadata for the chosen study.
@@ -70,6 +75,10 @@ performance, but clinical filters are never inferred unless explicitly stated by
 the user.
 
 ## Move studies with dicom-mcp (NL query -> C-MOVE)
+
+`dicom-nlquery execute` now supports move flows (when a destination node is
+present in the query). For safety, the CLI aborts if multiple studies match and
+asks you to refine the search.
 
 This script parses a natural language query using dicom-nlquery and then uses
 dicom-mcp to C-MOVE the first matched study to a destination node.
@@ -129,6 +138,25 @@ ranking:
 mcp:
   command: "dicom-mcp"
   config_path: "../dicom-mcp/configuration.yaml"
+
+resolver:
+  enabled: true
+  require_confirmation: true
+  confirmation:
+    accept_tokens: ["sim", "s", "yes", "y"]
+    reject_tokens: ["nao", "não", "n", "no"]
+    prompt_template: |
+      Modo: {mode}
+      Origem: {source_node}
+      Destino: {destination_node}
+      Filtros:
+      {filters}
+      Confirmar? ({accept_tokens}/{reject_tokens})
+    invalid_response: "Resposta invalida. Use: {accept_tokens} ou {reject_tokens}."
+    correction_prompt: "Digite a consulta corrigida:"
+    cancel_message: "Operacao cancelada."
+    max_invalid_responses: 2
+    max_rejections: 2
 ```
 
 ## Search Pipeline Guide

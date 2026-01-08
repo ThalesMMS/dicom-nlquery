@@ -37,6 +37,10 @@ class GuardrailsConfig(BaseModel):
     search_timeout_seconds: int = 120
 
 
+class TelemetryConfig(BaseModel):
+    enabled: bool = True
+
+
 class SearchPipelineConfig(BaseModel):
     enabled: bool = True
     structured_first: bool = True
@@ -44,7 +48,19 @@ class SearchPipelineConfig(BaseModel):
     max_rewrites: int = 10
     series_probe_enabled: bool = False
     series_probe_limit: int = 50
+    server_limit_studies: int | None = None
+    server_limit_series: int | None = None
     wildcard_modes: list[str] = Field(default_factory=lambda: ["contains", "token_chain", "startswith"])
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+
+    @field_validator("server_limit_studies", "server_limit_series")
+    @classmethod
+    def validate_server_limits(cls, value: int | None) -> int | None:
+        if value is None:
+            return value
+        if value <= 0:
+            raise ValueError("server_limit values must be positive when provided")
+        return value
 
 
 class LexiconConfig(BaseModel):
@@ -74,12 +90,89 @@ class MatchingConfig(BaseModel):
     synonyms: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class ConfirmationConfig(BaseModel):
+    accept_tokens: list[str] = Field(default_factory=lambda: ["yes"])
+    reject_tokens: list[str] = Field(default_factory=lambda: ["no"])
+    prompt_template: str = (
+        "Mode: {mode}\n"
+        "Source node: {source_node}\n"
+        "Destination node: {destination_node}\n"
+        "Filters:\n{filters}\n"
+        "Confirm? ({accept_tokens}/{reject_tokens})"
+    )
+    invalid_response: str = (
+        "Response not recognized. Reply with one of: {accept_tokens} or {reject_tokens}."
+    )
+    correction_prompt: str = "Please provide a corrected query."
+    cancel_message: str = "Request cancelled."
+    max_invalid_responses: int = 2
+    max_rejections: int = 2
+
+    @field_validator("accept_tokens", "reject_tokens")
+    @classmethod
+    def validate_tokens(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for token in value:
+            cleaned = token.strip()
+            if not cleaned:
+                continue
+            if cleaned not in normalized:
+                normalized.append(cleaned)
+        if not normalized:
+            raise ValueError("confirmation tokens must not be empty")
+        return normalized
+
+    @field_validator("max_invalid_responses", "max_rejections")
+    @classmethod
+    def validate_limits(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("confirmation limits must be non-negative")
+        return value
+
+
+class ResolverConfig(BaseModel):
+    enabled: bool = True
+    require_confirmation: bool = True
+    confirmation: ConfirmationConfig = Field(default_factory=ConfirmationConfig)
+
+
+class McpRetryConfig(BaseModel):
+    max_attempts: int = 3
+    backoff_seconds: list[float] = Field(default_factory=lambda: [0.5, 1.0, 2.0])
+
+    @field_validator("max_attempts")
+    @classmethod
+    def validate_max_attempts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("retry.max_attempts must be at least 1")
+        return value
+
+    @field_validator("backoff_seconds")
+    @classmethod
+    def validate_backoff_seconds(cls, value: list[float]) -> list[float]:
+        if any(item < 0 for item in value):
+            raise ValueError("retry.backoff_seconds must be non-negative")
+        return value
+
+
 class McpServerConfig(BaseModel):
     command: str = "dicom-mcp"
     config_path: str | None = None
     args: list[str] = Field(default_factory=list)
     cwd: str | None = None
     env: dict[str, str] | None = None
+    tool_timeout_seconds: float = 30.0
+    retry: McpRetryConfig = Field(default_factory=McpRetryConfig)
+    non_idempotent_tools: list[str] = Field(
+        default_factory=lambda: ["move_study", "move_series"]
+    )
+
+    @field_validator("tool_timeout_seconds")
+    @classmethod
+    def validate_tool_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("tool_timeout_seconds must be greater than 0")
+        return value
 
 
 class NLQueryConfig(BaseModel):
@@ -90,6 +183,7 @@ class NLQueryConfig(BaseModel):
     rag: RagConfig | None = None
     ranking: RankingConfig = Field(default_factory=RankingConfig)
     mcp: McpServerConfig | None = None
+    resolver: ResolverConfig | None = None
     nodes: dict[str, DicomNodeConfig] | None = None
     current_node: str | None = None
     calling_aet: str | None = None
@@ -218,11 +312,89 @@ class SearchStats(BaseModel):
     successful_stage: str | None
     rewrites_tried: list[str] = Field(default_factory=list)
     stages_tried: list[str] = Field(default_factory=list)
+    stage_metrics: dict[str, "StageMetrics"] = Field(default_factory=dict)
+
+
+class StageMetrics(BaseModel):
+    attempts: int = 0
+    successes: int = 0
+    latency_seconds: float = 0.0
+    studies_returned: int = 0
+    studies_matched: int = 0
 
 
 class SearchResult(BaseModel):
     accession_numbers: list[str]
+    study_instance_uids: list[str] = Field(default_factory=list)
     stats: SearchStats
+
+
+class NodeMatch(BaseModel):
+    node_id: str
+    start: int
+    end: int
+    source: str
+
+    @field_validator("node_id", "source")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("node match fields must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_span(self) -> "NodeMatch":
+        if self.start < 0 or self.end < 0:
+            raise ValueError("node match span must be non-negative")
+        if self.end <= self.start:
+            raise ValueError("node match span must have end greater than start")
+        return self
+
+
+class ResolvedRequest(BaseModel):
+    source_node: str | None = None
+    destination_node: str | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+    unmatched_tokens: list[str] = Field(default_factory=list)
+
+    @field_validator("source_node", "destination_node")
+    @classmethod
+    def normalize_nodes(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("unmatched_tokens")
+    @classmethod
+    def normalize_unmatched(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for token in value:
+            normalized = token.strip()
+            if not normalized:
+                continue
+            if normalized not in cleaned:
+                cleaned.append(normalized)
+        return cleaned
+
+
+class ResolverResult(BaseModel):
+    request: ResolvedRequest
+    needs_confirmation: bool = True
+    unresolved: list[str] = Field(default_factory=list)
+
+    @field_validator("unresolved")
+    @classmethod
+    def normalize_unresolved(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value:
+            normalized = item.strip()
+            if not normalized:
+                continue
+            if normalized not in cleaned:
+                cleaned.append(normalized)
+        return cleaned
 
 
 UID_RE = re.compile(r"^\d+(?:\.\d+)+$")
@@ -236,6 +408,8 @@ class ToolName(str, Enum):
 
 
 class AgentPhase(str, Enum):
+    RESOLVE = "resolve"
+    CONFIRM = "confirm"
     SEARCH = "search"
     INSPECT = "inspect"
     MOVE = "move"
@@ -269,6 +443,10 @@ class StudySummary(BaseModel):
 
 class AgentState(BaseModel):
     phase: AgentPhase = AgentPhase.SEARCH
+    resolved_request: ResolvedRequest | None = None
+    awaiting_confirmation: bool = False
+    confirmation_invalid_attempts: int = 0
+    confirmation_rejections: int = 0
     search_filters: dict[str, Any] = Field(default_factory=dict)
     search_results: list[StudySummary] = Field(default_factory=list)
     selected_uid: str | None = None
