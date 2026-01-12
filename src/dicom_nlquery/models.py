@@ -19,15 +19,65 @@ class LLMConfig(BaseModel):
     provider: str
     base_url: str
     model: str
-    temperature: float = 0
+    temperature: float = 0.1
     timeout: int = 60
+    api_key: str | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    stop: list[str] | None = None
+    response_format: str = "json_object"
 
     @field_validator("provider")
     @classmethod
     def validate_provider(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized not in {"ollama", "lmstudio"}:
-            raise ValueError("provider must be 'ollama' or 'lmstudio'")
+        if normalized not in {"ollama", "lmstudio", "openai"}:
+            raise ValueError("provider must be 'ollama', 'lmstudio', or 'openai'")
+        return normalized
+
+    @field_validator("max_tokens")
+    @classmethod
+    def validate_max_tokens(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("max_tokens must be greater than zero")
+        return value
+
+    @field_validator("max_completion_tokens")
+    @classmethod
+    def validate_max_completion_tokens(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("max_completion_tokens must be greater than zero")
+        return value
+
+    @field_validator("stop", mode="before")
+    @classmethod
+    def validate_stop(cls, value: object | None) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("stop must be a list of strings")
+        cleaned: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        return cleaned or None
+
+    @field_validator("response_format")
+    @classmethod
+    def validate_response_format(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        allowed = {"json_object", "json_schema", "auto"}
+        if normalized not in allowed:
+            raise ValueError("response_format must be 'json_object', 'json_schema', or 'auto'")
         return normalized
 
 
@@ -46,7 +96,7 @@ class SearchPipelineConfig(BaseModel):
     structured_first: bool = True
     max_attempts: int = 12
     max_rewrites: int = 10
-    series_probe_enabled: bool = False
+    series_probe_enabled: bool = True
     series_probe_limit: int = 50
     server_limit_studies: int | None = None
     server_limit_series: int | None = None
@@ -625,6 +675,17 @@ class QuerySeriesArgs(BaseModel):
             return None
         normalized = value.strip().upper()
         return normalized or None
+
+
+class MoveResult(BaseModel):
+    """Result of a C-MOVE operation."""
+
+    success: bool
+    message: str
+    completed: int = 0
+    failed: int = 0
+    warning: int = 0
+    studies: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MoveStudyArgs(BaseModel):

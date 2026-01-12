@@ -5,7 +5,7 @@ Natural language DICOM query via dicom-nlquery + dicom-mcp server.
 Example:
   python scripts/nlquery_move_study.py \
     "women ages 20 to 40 with cranial MR" \
-    --mcp-config ../dicom-mcp/configuration.yaml \
+    --mcp-config ../configs/dicom.yaml \
     --source-node orthanc \
     --destination-node radiant \
     --date-range 20100101-20991231

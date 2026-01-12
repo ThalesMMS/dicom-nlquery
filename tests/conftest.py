@@ -5,7 +5,7 @@ class FakeLLMClient:
     def __init__(self, response: str) -> None:
         self._response = response
 
-    def chat(self, system_prompt: str, user_prompt: str) -> str:
+    def chat(self, system_prompt: str, user_prompt: str, **_kwargs) -> str:
         return self._response
 
 

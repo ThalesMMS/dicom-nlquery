@@ -8,7 +8,7 @@ import anyio
 from dicom_nlquery.agent import DicomAgent
 from dicom_nlquery.config import load_config
 from dicom_nlquery.dicom_client import DicomClient  # Local client with query_studies
-from dicom_nlquery.llm_client import OllamaClient
+from dicom_nlquery.llm_client import create_llm_client
 from dicom_nlquery.lexicon import load_lexicon
 from dicom_nlquery.mcp_client import McpSession, build_stdio_server_params
 from dicom_nlquery.models import AgentPhase
@@ -44,8 +44,8 @@ def main():
         called_aet="ORTHANC"
     )
 
-    # 3. Inicia Agente
-    llm = OllamaClient.from_config(config.llm)
+    # 3. Start agent
+    llm = create_llm_client(config.llm)
     lexicon = None
     if config.lexicon is not None:
         lexicon = load_lexicon(config.lexicon.path, config.lexicon.synonyms)
@@ -86,16 +86,16 @@ def main():
     )
 
     print(f"🚀 Starting investigation for: {args.query}")
-    resposta = agent.run(args.query)
+    response = agent.run(args.query)
     while agent.state.phase in {AgentPhase.CONFIRM, AgentPhase.RESOLVE}:
-        print(f"\n🤖 Response:\n{resposta}")
+        print(f"\n🤖 Response:\n{response}")
         try:
             followup = input("> ")
         except EOFError:
             return
-        resposta = agent.run(followup)
+        response = agent.run(followup)
 
-    print(f"\n🤖 Response:\n{resposta}")
+    print(f"\n🤖 Response:\n{response}")
 
 if __name__ == "__main__":
     main()

@@ -24,6 +24,11 @@ from .search_utils import (
     _has_series_filters,
     _series_matches_criteria,
     _study_matches_criteria,
+    _iter_text_values,
+    _matches_any_field,
+    SERIES_DESCRIPTION_EXTRA_ATTRS,
+    SERIES_TEXT_FIELDS,
+    STUDY_TEXT_FIELDS,
 )
 
 
@@ -64,13 +69,25 @@ def _wildcard_patterns(text: str, modes: Iterable[str]) -> list[str]:
     return patterns
 
 
+def _freeze(value: object) -> object:
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze(val)) for key, val in value.items()))
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted((_freeze(item) for item in value), key=repr))
+    return value
+
+
 def _dedupe_attempts(attempts: list[SearchAttempt]) -> list[SearchAttempt]:
-    seen: set[tuple[str, tuple[tuple[str, object], ...], str | None, bool]] = set()
+    seen: set[tuple[str, object, str | None, bool]] = set()
     result: list[SearchAttempt] = []
     for attempt in attempts:
         key = (
             attempt.stage,
-            tuple(sorted(attempt.study_args.items())),
+            _freeze(attempt.study_args),
             attempt.description_override,
             attempt.use_lexicon_match,
         )
@@ -79,6 +96,20 @@ def _dedupe_attempts(attempts: list[SearchAttempt]) -> list[SearchAttempt]:
         seen.add(key)
         result.append(attempt)
     return result
+
+
+def _lexicon_matches_any(
+    item: object,
+    description: str,
+    fields: Iterable[str],
+    lexicon: Lexicon,
+) -> bool:
+    for field in fields:
+        value = _get_attr(item, field)
+        for text in _iter_text_values(value):
+            if lexicon.match_text(description, text):
+                return True
+    return False
 
 
 def build_attempts(
@@ -95,6 +126,7 @@ def build_attempts(
 
     attempts: list[SearchAttempt] = []
     if description:
+        # Order attempts from most structured to most expansive to keep queries selective.
         if config.structured_first:
             structured_args = _build_study_args(
                 criteria,
@@ -128,6 +160,7 @@ def build_attempts(
                 )
             )
 
+        # Collect rewrite candidates from lexicon/RAG before expanding to wildcard variants.
         rewrite_candidates: dict[str, RewriteCandidate] = {}
         if lexicon is not None and config.max_rewrites != 0:
             max_candidates = config.max_rewrites if config.max_rewrites > 0 else None
@@ -166,6 +199,7 @@ def build_attempts(
     else:
         attempts.append(SearchAttempt(stage="direct", study_args=base_args, reason="no-description"))
 
+    # Dedupe to avoid issuing identical C-FIND requests across stages.
     attempts = _dedupe_attempts(attempts)
     if config.max_attempts and len(attempts) > config.max_attempts:
         attempts = attempts[: config.max_attempts]
@@ -299,9 +333,11 @@ def run_pipeline_sync(
 
             description_matcher = None
             if attempt.use_lexicon_match and lexicon and original_description:
-                description_matcher = lambda item: lexicon.match_text(
+                description_matcher = lambda item: _lexicon_matches_any(
+                    item,
                     original_description,
-                    str(_get_attr(item, "StudyDescription") or ""),
+                    STUDY_TEXT_FIELDS,
+                    lexicon,
                 )
             matches_study = _study_matches_criteria(
                 study,
@@ -311,6 +347,7 @@ def run_pipeline_sync(
                 description_matcher=description_matcher,
             )
             if not matches_study:
+                # Optionally probe a few series to match text when study-level fields are sparse.
                 if not (attempt.allow_series_probe and config.series_probe_enabled):
                     continue
                 if not _study_matches_criteria(
@@ -331,6 +368,8 @@ def run_pipeline_sync(
                 if config.series_probe_limit <= 0:
                     continue
                 series_kwargs = {"study_instance_uid": study_uid}
+                if original_description:
+                    series_kwargs["additional_attributes"] = list(SERIES_DESCRIPTION_EXTRA_ATTRS)
                 if config.server_limit_series is not None:
                     series_kwargs["limit"] = config.server_limit_series
                 series_list = list(query_series(**series_kwargs))
@@ -340,25 +379,22 @@ def run_pipeline_sync(
                 series_match = False
                 for item in series_list[: config.series_probe_limit]:
                     if lexicon and original_description:
-                        if lexicon.match_text(
+                        if _lexicon_matches_any(
+                            item,
                             original_description,
-                            str(_get_attr(item, "SeriesDescription") or ""),
-                        ):
-                            series_match = True
-                            break
-                        if lexicon.match_text(
-                            original_description,
-                            str(_get_attr(item, "BodyPartExamined") or ""),
+                            SERIES_TEXT_FIELDS,
+                            lexicon,
                         ):
                             series_match = True
                             break
                     elif attempt.description_override:
-                        if _get_attr(item, "SeriesDescription") and attempt.description_override:
-                            if attempt.description_override.strip("*") in str(
-                                _get_attr(item, "SeriesDescription")
-                            ):
-                                series_match = True
-                                break
+                        if _matches_any_field(
+                            item,
+                            SERIES_TEXT_FIELDS,
+                            attempt.description_override,
+                        ):
+                            series_match = True
+                            break
                 if not series_match:
                     stats.studies_filtered_series += 1
                     continue
@@ -367,6 +403,7 @@ def run_pipeline_sync(
                 continue
 
             if has_series_filters:
+                # Apply series-level filters by requiring at least one matching series.
                 if query_series is None:
                     raise RuntimeError("query_client lacks query_series()")
                 study_uid = _get_attr(study, "StudyInstanceUID")
@@ -408,6 +445,7 @@ def run_pipeline_sync(
         )
 
         if attempt_success:
+            # Rank matches for relevance and stop at the first successful stage.
             accession_numbers = _rank_accessions(
                 attempt_accession_matches,
                 criteria.study.study_description or attempt.description_override,
@@ -515,9 +553,11 @@ async def run_pipeline_async(
 
             description_matcher = None
             if attempt.use_lexicon_match and lexicon and original_description:
-                description_matcher = lambda item: lexicon.match_text(
+                description_matcher = lambda item: _lexicon_matches_any(
+                    item,
                     original_description,
-                    str(_get_attr(item, "StudyDescription") or ""),
+                    STUDY_TEXT_FIELDS,
+                    lexicon,
                 )
             matches_study = _study_matches_criteria(
                 study,
@@ -527,6 +567,7 @@ async def run_pipeline_async(
                 description_matcher=description_matcher,
             )
             if not matches_study:
+                # Optionally probe a few series to match text when study-level fields are sparse.
                 if not (attempt.allow_series_probe and config.series_probe_enabled):
                     continue
                 if not _study_matches_criteria(
@@ -545,6 +586,8 @@ async def run_pipeline_async(
                 if config.series_probe_limit <= 0:
                     continue
                 series_kwargs = {"study_instance_uid": study_uid}
+                if original_description:
+                    series_kwargs["additional_attributes"] = list(SERIES_DESCRIPTION_EXTRA_ATTRS)
                 if config.server_limit_series is not None:
                     series_kwargs["limit"] = config.server_limit_series
                 series_list = list(await query_client.query_series(**series_kwargs))
@@ -554,25 +597,22 @@ async def run_pipeline_async(
                 series_match = False
                 for item in series_list[: config.series_probe_limit]:
                     if lexicon and original_description:
-                        if lexicon.match_text(
+                        if _lexicon_matches_any(
+                            item,
                             original_description,
-                            str(_get_attr(item, "SeriesDescription") or ""),
-                        ):
-                            series_match = True
-                            break
-                        if lexicon.match_text(
-                            original_description,
-                            str(_get_attr(item, "BodyPartExamined") or ""),
+                            SERIES_TEXT_FIELDS,
+                            lexicon,
                         ):
                             series_match = True
                             break
                     elif attempt.description_override:
-                        if _get_attr(item, "SeriesDescription") and attempt.description_override:
-                            if attempt.description_override.strip("*") in str(
-                                _get_attr(item, "SeriesDescription")
-                            ):
-                                series_match = True
-                                break
+                        if _matches_any_field(
+                            item,
+                            SERIES_TEXT_FIELDS,
+                            attempt.description_override,
+                        ):
+                            series_match = True
+                            break
                 if not series_match:
                     stats.studies_filtered_series += 1
                     continue
@@ -581,6 +621,7 @@ async def run_pipeline_async(
                 continue
 
             if has_series_filters:
+                # Apply series-level filters by requiring at least one matching series.
                 study_uid = _get_attr(study, "StudyInstanceUID")
                 if not study_uid:
                     stats.studies_filtered_series += 1
@@ -620,6 +661,7 @@ async def run_pipeline_async(
         )
 
         if attempt_success:
+            # Rank matches for relevance and stop at the first successful stage.
             accession_numbers = _rank_accessions(
                 attempt_accession_matches,
                 criteria.study.study_description or attempt.description_override,
@@ -652,6 +694,7 @@ def _score_similarity(original: str, candidate: str) -> float:
     candidate_norm = normalize_text(candidate)
     if not original_norm or not candidate_norm:
         return 0.0
+    # Blend character similarity with token overlap to favor near-synonyms.
     ratio = SequenceMatcher(None, original_norm, candidate_norm).ratio()
     original_tokens = set(original_norm.split())
     candidate_tokens = set(candidate_norm.split())

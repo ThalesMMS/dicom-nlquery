@@ -16,7 +16,7 @@ from .confirmation import (
     classify_confirmation_response,
 )
 from .lexicon import Lexicon, normalize_text as lexicon_normalize_text
-from .llm_client import OllamaClient
+from .llm_client import LLMClient
 from .models import (
     AgentPhase,
     AgentState,
@@ -183,6 +183,7 @@ def _validate_search_evidence(
     guardrail_date_range: str | None,
     lexicon: Lexicon | None = None,
 ) -> str | None:
+    # Guardrail: every string filter must be supported by explicit user evidence.
     for field, value in args.model_dump(exclude_none=True).items():
         if not isinstance(value, str):
             continue
@@ -197,7 +198,7 @@ def _validate_search_evidence(
 class DicomAgent:
     def __init__(
         self,
-        llm: OllamaClient,
+        llm: LLMClient,
         dicom_client: Any,
         max_steps: int = MAX_STEPS,
         lexicon: Lexicon | None = None,
@@ -234,6 +235,7 @@ class DicomAgent:
 
     def _relax_filters(self) -> tuple[dict[str, Any] | None, str | None]:
         filters = dict(self.state.search_filters)
+        # Drop one filter at a time (in priority order) to widen the query after no results.
         for key in RELAXATION_ORDER:
             if key not in filters:
                 continue
@@ -292,6 +294,7 @@ class DicomAgent:
 
     def _apply_destination_node(self, tool: ToolName, arguments: dict[str, Any]) -> dict[str, Any]:
         args = dict(arguments)
+        # Track destination_node across steps but only pass it to move_study.
         destination = args.get("destination_node")
         if isinstance(destination, str):
             destination = destination.strip()
@@ -415,6 +418,7 @@ class DicomAgent:
             content = response.get("content") or ""
 
             if not tool_calls:
+                # Enforce the tool-call protocol: required tools must be invoked, not described.
                 if self.state.last_tool is not None and content:
                     return content
                 if allowed_tools:
@@ -462,6 +466,7 @@ class DicomAgent:
                 arguments = resolved_filters
 
             if tool_name == ToolName.QUERY_STUDIES and self._user_query:
+                # Validate filters against the user's text to avoid inferred constraints.
                 try:
                     parsed = QueryStudiesArgs.model_validate(arguments)
                 except ValidationError:

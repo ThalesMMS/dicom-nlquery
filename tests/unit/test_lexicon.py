@@ -4,7 +4,7 @@ from dicom_nlquery.lexicon import Lexicon, normalize_text
 
 
 def test_lexicon_normalize_text_removes_accents() -> None:
-    assert normalize_text("Café") == "cafe"
+    assert normalize_text("naïve") == "naive"
 
 
 def test_lexicon_expand_and_equivalent() -> None:

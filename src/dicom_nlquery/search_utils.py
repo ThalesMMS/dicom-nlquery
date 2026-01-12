@@ -1,9 +1,60 @@
 from __future__ import annotations
 
 import re
-from typing import Callable
+from typing import Callable, Iterable
 
 from .models import SearchCriteria
+
+STUDY_TEXT_FIELDS = (
+    "StudyDescription",
+    "RequestedProcedureDescription",
+    "ReferringPhysicianName",
+    "RequestingPhysician",
+    "InstitutionName",
+    "Manufacturer",
+    "ManufacturerModelName",
+    "BodyPartExamined",
+    "ProtocolName",
+    "RequestedProcedureCodeSequence",
+    "RequestAttributesSequence",
+)
+SERIES_TEXT_FIELDS = (
+    "SeriesDescription",
+    "BodyPartExamined",
+    "ProtocolName",
+    "Modality",
+    "Manufacturer",
+    "ManufacturerModelName",
+    "RequestedProcedureDescription",
+    "RequestedProcedureCodeSequence",
+    "RequestAttributesSequence",
+)
+STUDY_DESCRIPTION_EXTRA_ATTRS = (
+    "Modality",
+    "Manufacturer",
+    "InstitutionName",
+    "ReferringPhysicianName",
+    "RequestingPhysician",
+    "StudyDescription",
+    "SeriesDescription",
+    "ManufacturerModelName",
+    "BodyPartExamined",
+    "ProtocolName",
+    "RequestedProcedureDescription",
+    "RequestedProcedureCodeSequence",
+    "RequestAttributesSequence",
+)
+SERIES_DESCRIPTION_EXTRA_ATTRS = (
+    "Modality",
+    "Manufacturer",
+    "SeriesDescription",
+    "ManufacturerModelName",
+    "BodyPartExamined",
+    "ProtocolName",
+    "RequestedProcedureDescription",
+    "RequestedProcedureCodeSequence",
+    "RequestAttributesSequence",
+)
 
 
 def _get_attr(obj: object, key: str) -> object | None:
@@ -19,12 +70,15 @@ def _normalize_str(value: object | None) -> str | None:
     return text or None
 
 
+def _tokenize_needle(needle: str) -> list[str]:
+    return [token for token in re.split(r"[\s*?\^]+", needle.casefold()) if token]
+
+
 def _contains_casefold(haystack: object | None, needle: str) -> bool:
     if haystack is None:
         return False
     hay = str(haystack).casefold()
-    ned = needle.casefold()
-    tokens = [token for token in re.split(r"[\s*?\^]+", ned) if token]
+    tokens = _tokenize_needle(needle)
     if not tokens:
         return True
     pos = 0
@@ -34,6 +88,48 @@ def _contains_casefold(haystack: object | None, needle: str) -> bool:
             return False
         pos = idx + len(token)
     return True
+
+
+def _contains_casefold_unordered(haystack: object | None, tokens: Iterable[str]) -> bool:
+    if haystack is None:
+        return False
+    hay = str(haystack).casefold()
+    return all(token in hay for token in tokens)
+
+
+def _iter_text_values(value: object | None) -> Iterable[str]:
+    if value is None:
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_text_values(item)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_text_values(item)
+        return
+    text = str(value).strip()
+    if text:
+        yield text
+
+
+def _contains_casefold_any(haystack: object | None, needle: str) -> bool:
+    tokens = _tokenize_needle(needle)
+    if not tokens:
+        return True
+    for text in _iter_text_values(haystack):
+        if _contains_casefold(text, needle):
+            return True
+        if len(tokens) > 1 and _contains_casefold_unordered(text, tokens):
+            return True
+    return False
+
+
+def _matches_any_field(item: object, fields: Iterable[str], needle: str) -> bool:
+    for field in fields:
+        if _contains_casefold_any(_get_attr(item, field), needle):
+            return True
+    return False
 
 
 def _date_matches(candidate: str | None, filter_value: str) -> bool:
@@ -110,7 +206,7 @@ def _study_matches_criteria(
             if description_value is None:
                 description_value = filters.study_description
             if description_value:
-                if not _contains_casefold(_get_attr(study, "StudyDescription"), description_value):
+                if not _matches_any_field(study, STUDY_TEXT_FIELDS, description_value):
                     return False
 
     if filters.accession_number:
@@ -164,6 +260,12 @@ def _build_study_args(
         args.pop("study_description", None)
     if study_description_override is not None:
         args["study_description"] = study_description_override
+    if criteria.study.study_description or study_description_override is not None:
+        extras = list(args.get("additional_attributes") or [])
+        for attr in STUDY_DESCRIPTION_EXTRA_ATTRS:
+            if attr not in extras:
+                extras.append(attr)
+        args["additional_attributes"] = extras
     if "patient_name" in args:
         name = str(args["patient_name"]).strip()
         if name and "*" not in name and "?" not in name:
@@ -176,10 +278,17 @@ def _build_study_args(
 
 
 def _build_series_args(criteria: SearchCriteria) -> dict[str, object]:
-    if not _has_series_filters(criteria):
-        return {}
-    assert criteria.series is not None
-    return criteria.series.model_dump(exclude_none=True)
+    args: dict[str, object] = {}
+    if _has_series_filters(criteria):
+        assert criteria.series is not None
+        args.update(criteria.series.model_dump(exclude_none=True))
+    if criteria.study.study_description:
+        extras = list(args.get("additional_attributes") or [])
+        for attr in SERIES_DESCRIPTION_EXTRA_ATTRS:
+            if attr not in extras:
+                extras.append(attr)
+        args["additional_attributes"] = extras
+    return args
 
 
 def _has_series_filters(criteria: SearchCriteria) -> bool:

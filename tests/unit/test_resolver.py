@@ -8,7 +8,7 @@ class StubLLM:
     def __init__(self, response: str) -> None:
         self._response = response
 
-    def chat(self, system_prompt: str, user_prompt: str) -> str:
+    def chat(self, system_prompt: str, user_prompt: str, **_kwargs) -> str:
         return self._response
 
 
@@ -52,3 +52,15 @@ def test_resolver_flags_missing_destination() -> None:
     result = resolve_request("from ORTHANC patient 1", _registry(), llm)
 
     assert "missing_destination_node" in result.unresolved
+
+
+def test_resolver_handles_invalid_filters() -> None:
+    llm = StubLLM(
+        '{"source_node": "ORTHANC", "destination_node": "RADIANT", '
+        '"filters": [{"node_id": "monai-deploy"}]}'
+    )
+
+    result = resolve_request("move from ORTHANC to RADIANT", _registry(), llm)
+
+    assert result.request.filters == {}
+    assert "invalid_filters" in result.unresolved

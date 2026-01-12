@@ -13,6 +13,9 @@ def load_config(path: str | Path) -> NLQueryConfig:
     config_path = Path(path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     data = raw or {}
+    if not isinstance(data, dict):
+        raise ValueError("Configuration must be a mapping")
+    data = _merge_llm_config(data, config_path)
     config = NLQueryConfig.model_validate(data)
     config = _resolve_mcp_config(config, config_path)
     config = _resolve_lexicon_config(config, config_path)
@@ -32,6 +35,30 @@ def _resolve_mcp_config(config: NLQueryConfig, config_path: Path) -> NLQueryConf
         mcp = _resolve_mcp_paths(mcp, config_path.parent)
 
     return config.model_copy(update={"mcp": mcp})
+
+
+def _merge_llm_config(data: dict[str, object], config_path: Path) -> dict[str, object]:
+    llm_path = data.get("llm_path")
+    if not llm_path:
+        return data
+    if not isinstance(llm_path, str):
+        raise ValueError("llm_path must be a string")
+    resolved = _resolve_path(config_path.parent, llm_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"LLM configuration file {resolved} not found")
+    llm_raw = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
+    if not isinstance(llm_raw, dict):
+        raise ValueError("LLM configuration file must contain a mapping")
+    llm_data = llm_raw.get("llm") if isinstance(llm_raw.get("llm"), dict) else llm_raw
+    overrides = data.get("llm") or {}
+    if not isinstance(overrides, dict):
+        raise ValueError("llm overrides must be a mapping")
+    merged = dict(llm_data)
+    merged.update(overrides)
+    updated = dict(data)
+    updated["llm"] = merged
+    updated.pop("llm_path", None)
+    return updated
 
 
 def _resolve_lexicon_config(config: NLQueryConfig, config_path: Path) -> NLQueryConfig:
@@ -74,6 +101,10 @@ def _resolve_path(base_dir: Path, value: str) -> Path:
 
 def _find_default_mcp_config_path(config_path: Path) -> Path | None:
     candidates = [
+        config_path.parent / "configs" / "dicom.yaml",
+        config_path.parent.parent / "configs" / "dicom.yaml",
+        Path.cwd() / "configs" / "dicom.yaml",
+        Path.cwd().parent / "configs" / "dicom.yaml",
         config_path.parent / "dicom-mcp" / "configuration.yaml",
         config_path.parent.parent / "dicom-mcp" / "configuration.yaml",
         Path.cwd() / "dicom-mcp" / "configuration.yaml",

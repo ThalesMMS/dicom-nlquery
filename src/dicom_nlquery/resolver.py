@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from .llm_client import LLMClient
 from .models import NodeMatch, ResolvedRequest, ResolverResult
 from .node_registry import NodeRegistry
 
@@ -13,10 +14,11 @@ from .node_registry import NodeRegistry
 TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
 
 RESOLVER_SYSTEM_PROMPT = (
-    "You are a DICOM request resolver. "
     "Return JSON only with keys: source_node, destination_node, filters, unmatched_tokens. "
-    "Matched nodes are nodes only and must never be placed inside filters. "
-    "Do not infer clinical filters that are not explicitly stated."
+    "Input JSON keys: q (query), m (matched node ids), n (available node ids). "
+    "filters must be a JSON object. "
+    "Nodes must not be placed inside filters. "
+    "Do not infer clinical filters."
 )
 
 
@@ -39,9 +41,11 @@ def resolve_request(
         extra={"extra_data": {"count": len(matches), "nodes": [m.node_id for m in matches]}},
     )
     user_prompt = _build_user_prompt(raw_query, matches, registry)
-    response = llm_client.chat(RESOLVER_SYSTEM_PROMPT, user_prompt)
-    request = _parse_llm_response(response)
+    # All LLMClient implementations support json_mode
+    response = llm_client.chat(RESOLVER_SYSTEM_PROMPT, user_prompt, json_mode=True)
+    request, issues = _parse_llm_response(response)
     unresolved: list[str] = []
+    unresolved.extend(issues)
     request, node_issues = _normalize_nodes(request, registry)
     unresolved.extend(node_issues)
     cleaned_filters, removed_tokens = strip_node_tokens_from_filters(
@@ -106,29 +110,42 @@ def _build_user_prompt(
     raw_query: str, matches: list[NodeMatch], registry: NodeRegistry
 ) -> str:
     payload = {
-        "query": raw_query,
-        "matched_nodes": [
-            {
-                "node_id": match.node_id,
-                "start": match.start,
-                "end": match.end,
-                "source": match.source,
-            }
-            for match in matches
-        ],
-        "available_nodes": registry.node_ids,
+        "q": raw_query,
+        "m": sorted({match.node_id for match in matches}),
+        "n": registry.node_ids,
     }
-    return json.dumps(payload, ensure_ascii=True)
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
-def _parse_llm_response(response: str) -> ResolvedRequest:
+def _parse_llm_response(response: str) -> tuple[ResolvedRequest, list[str]]:
     raw = _extract_json(response)
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("resolver response must be a JSON object")
+    issues: list[str] = []
+    filters = data.get("filters")
+    if filters is None:
+        data["filters"] = {}
+    elif not isinstance(filters, dict):
+        issues.append("invalid_filters")
+        data["filters"] = {}
+        if isinstance(filters, list):
+            extracted: list[str] = []
+            for item in filters:
+                if isinstance(item, dict):
+                    node_id = item.get("node_id") or item.get("node")
+                    if isinstance(node_id, str) and node_id.strip():
+                        extracted.append(node_id.strip())
+                elif isinstance(item, str):
+                    cleaned = item.strip()
+                    if cleaned:
+                        extracted.append(cleaned)
+            if extracted:
+                data.setdefault("unmatched_tokens", [])
+                data["unmatched_tokens"].extend(extracted)
     if data.get("filters") is None:
         data["filters"] = {}
-    return ResolvedRequest.model_validate(data)
+    return ResolvedRequest.model_validate(data), issues
 
 
 def _extract_json(response: str) -> str:

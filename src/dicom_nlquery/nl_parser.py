@@ -4,20 +4,22 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
+from typing import Any
 
+import yaml
 from pydantic import ValidationError
 
-from .llm_client import OllamaClient
+from .llm_client import LLMClient, OllamaClient, create_llm_client
 from .models import DATE_RE, LLMConfig, QueryStudiesArgs, SearchCriteria
 
 
 log = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are an assistant that converts natural language queries into structured DICOM search criteria.
+SYSTEM_PROMPT = """You convert a natural-language imaging request into structured DICOM search criteria.
 
-Your task is to extract search criteria from the provided text and return ONLY a valid JSON object following this schema (dicom-mcp):
+Return ONLY a valid JSON object that matches this schema:
 
 {
   "study": {
@@ -31,28 +33,84 @@ Your task is to extract search criteria from the provided text and return ONLY a
     "accession_number": "string" | null,
     "study_instance_uid": "string" | null
   },
-  "series": {
-    "modality": "MR" | "CT" | "US" | "CR" | null,
-    "series_number": "string" | null,
-    "series_description": "free text" | null,
-    "series_instance_uid": "string" | null
-  } | null
+  "series": null
 }
 
+Keys:
+- study: patient_id, patient_name, patient_sex(F/M/O), patient_birth_date(YYYYMMDD or range),
+  study_date(YYYYMMDD or range), modality_in_study(MR/CT/US/CR or MR\\\\CT),
+  study_description, accession_number, study_instance_uid
+- series: modality, series_number, series_description, series_instance_uid (omit unless explicitly requested)
+
 Rules:
-1. Return ONLY the JSON, with no additional explanations
-2. Use null for fields not mentioned in the query
-3. For sex: "female/woman" = "F", "male/man" = "M", "other" = "O"
-4. Dates must be in DICOM format YYYYMMDD or range YYYYMMDD-YYYYMMDD
-5. For modalities, use DICOM codes (e.g., MR, CT, US, CR). Use backslash for multiple modalities
-6. For free-text exam/body-part terms (e.g., skull, abdomen), prefer study_description
-7. Use series fields ONLY if the query explicitly asks for series info (e.g., series number, sequence, phase, series X). Otherwise use series=null
-8. You may use wildcard "*" in description fields when it makes sense
-9. If the query mentions age/age range, convert to patient_birth_date using the current date
-10. Do not invent modalities: use only those cited in the text
-11. Do not infer filters. If the user did not explicitly state sex, date, modality, description, IDs, or name, return null.
-12. Never use today's date as the default StudyDate.
+1) Always return ONLY the JSON object (no prose, no markdown).
+2) Use null for fields not mentioned.
+3) Use DICOM dates and modality codes.
+4) Put body-part terms and procedure/exam terms mentioned by the user into study.study_description.
+5) When using study_description, prefer wildcard matching by wrapping key terms with "*" (e.g. "*term*").
+6) If the query includes routing ("from X to Y"), X/Y are node names and MUST NOT appear inside filters.
+7) Age/range -> patient_birth_date using Today: YYYY-MM-DD.
+8) Do not invent filters; never default StudyDate.
+
+Examples (return only the JSON object, not the example labels):
+
+Query: "CT chest angiogram from NODE_A to NODE_B between 2000 and 2022"
+Output:
+{"study":{"patient_id":null,"patient_name":null,"patient_sex":null,"patient_birth_date":null,"study_date":"20000101-20221231","modality_in_study":"CT","study_description":"*chest*angiogram*","accession_number":null,"study_instance_uid":null},"series":null}
+
+Query: "MR brain study for patient ID 12345 on 20230101"
+Output:
+{"study":{"patient_id":"12345","patient_name":null,"patient_sex":null,"patient_birth_date":null,"study_date":"20230101","modality_in_study":"MR","study_description":"*brain*study*","accession_number":null,"study_instance_uid":null},"series":null}
+
+Query: "ultrasound abdomen exams for female patients from NODE_X to NODE_Y"
+Output:
+{"study":{"patient_id":null,"patient_name":null,"patient_sex":"F","patient_birth_date":null,"study_date":null,"modality_in_study":"US","study_description":"*abdomen*exam*","accession_number":null,"study_instance_uid":null},"series":null}
 """
+
+
+def _build_response_schema() -> dict[str, Any]:
+    study_props = {
+        "patient_id": {"type": ["string", "null"]},
+        "patient_name": {"type": ["string", "null"]},
+        "patient_sex": {"type": ["string", "null"], "enum": ["F", "M", "O", None]},
+        "patient_birth_date": {"type": ["string", "null"]},
+        "study_date": {"type": ["string", "null"]},
+        "modality_in_study": {
+            "type": ["string", "null"],
+            "enum": ["MR", "CT", "US", "CR", "MR\\CT", None],
+        },
+        "study_description": {"type": ["string", "null"]},
+        "accession_number": {"type": ["string", "null"]},
+        "study_instance_uid": {"type": ["string", "null"]},
+    }
+    series_props = {
+        "modality": {"type": ["string", "null"]},
+        "series_number": {"type": ["string", "null"]},
+        "series_description": {"type": ["string", "null"]},
+        "series_instance_uid": {"type": ["string", "null"]},
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "study": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": study_props,
+                "required": list(study_props.keys()),
+            },
+            "series": {
+                "type": ["object", "null"],
+                "additionalProperties": False,
+                "properties": series_props,
+                "required": list(series_props.keys()),
+            },
+        },
+        "required": ["study", "series"],
+    }
+
+
+RESPONSE_SCHEMA = _build_response_schema()
 
 SEX_EVIDENCE = {
     "M": ["male", "man", "men"],
@@ -82,6 +140,23 @@ STOPWORDS = {
     "a",
     "an",
 }
+FALLBACK_DESCRIPTION_STOPWORDS = {
+    "age",
+    "ages",
+    "between",
+    "during",
+    "exam",
+    "exams",
+    "from",
+    "patient",
+    "patients",
+    "study",
+    "studies",
+    "through",
+    "until",
+    "year",
+    "years",
+}
 BODY_PART_TERMS = {"pelvis", "pelvic"}
 DATE_HINT_RE = re.compile(
     r"\b(today|yesterday|week(s)?|month(s)?|day(s)?|last|past|recent|recently)\b"
@@ -89,6 +164,17 @@ DATE_HINT_RE = re.compile(
 DATE_TOKEN_RE = re.compile(r"\b\d{8}\b|\b\d{4}[-/]\d{2}[-/]\d{2}\b|\b\d{8}-\d{8}\b")
 AGE_RANGE_RE = re.compile(r"\b\d{1,3}\s*(?:to|-)\s*\d{1,3}\s*(?:years?|yrs?|yr)?\b")
 AGE_RE = re.compile(r"\b\d{1,3}\s*(?:years?|yrs?|yr|y/o|yo)\b")
+AGE_RANGE_CAPTURE_RE = re.compile(
+    r"\b(\d{1,3})\s*(?:to|-)\s*(\d{1,3})\s*(?:years?|yrs?|yr|y/o|yo)?\b"
+)
+AGE_CAPTURE_RE = re.compile(r"\b(\d{1,3})\s*(?:years?|yrs?|yr|y/o|yo)\b")
+YEAR_RANGE_RE = re.compile(
+    r"\b(?:from|between)?\s*(?:year\s*)?(\d{4})\s*"
+    r"(?:to|until|through|and|-)\s*(?:year\s*)?(\d{4})\b"
+)
+YEAR_SINCE_RE = re.compile(r"\b(?:since|from)\s*(?:year\s*)?(\d{4})\b")
+YEAR_ONLY_RE = re.compile(r"\b(?:in|during|year)\s*(\d{4})\b")
+SOURCE_RE = re.compile(r"\bfrom\s+([a-z0-9_-]+)\b")
 DESTINATION_RE = re.compile(r"\bto\s+([a-z0-9_-]+)\b")
 NAME_START_RE = re.compile(r"\b(?:exams?|studies)\s+(?:of|for)\s+(.+)$")
 PATIENT_START_RE = re.compile(r"\b(?:patient|patients)\s+(?:of\s+)?(.+)$")
@@ -109,6 +195,9 @@ NAME_BLOCKLIST = {
     "studies",
 }
 NAME_PREPOSITIONS = {"of", "for"}
+SERIES_EVIDENCE_RE = re.compile(
+    r"\b(series(?:\s*(?:number|no|#))?|sequence(?:\s*(?:number|no|#))?|phase)\b"
+)
 
 
 def _normalize_text(text: str) -> str:
@@ -140,6 +229,54 @@ def _extract_body_part_from_query(query_norm: str) -> str | None:
         if normalized in BODY_PART_TERMS:
             return normalized
     return None
+
+
+def _extract_routing_tokens(query_norm: str) -> set[str]:
+    tokens: set[str] = set()
+    for regex in (SOURCE_RE, DESTINATION_RE):
+        for match in regex.finditer(query_norm):
+            token = _normalize_token(match.group(1))
+            if token:
+                tokens.add(token)
+    return tokens
+
+
+def _extract_fallback_description(query_norm: str, study: dict[str, object]) -> str | None:
+    remove_tokens = set(STOPWORDS)
+    remove_tokens.update(FALLBACK_DESCRIPTION_STOPWORDS)
+    remove_tokens.update(_extract_routing_tokens(query_norm))
+    for tokens in SEX_EVIDENCE.values():
+        for token in tokens:
+            normalized = _normalize_token(token)
+            if normalized:
+                remove_tokens.add(normalized)
+    for tokens in MODALITY_EVIDENCE.values():
+        for token in tokens:
+            normalized = _normalize_token(token)
+            if normalized:
+                remove_tokens.add(normalized)
+    patient_name = study.get("patient_name")
+    if isinstance(patient_name, str) and patient_name.strip():
+        for token in _normalize_text(patient_name).split():
+            normalized = _normalize_token(token)
+            if normalized:
+                remove_tokens.add(normalized)
+
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for raw_token in query_norm.split():
+        normalized = _normalize_token(raw_token)
+        if not normalized or normalized in remove_tokens:
+            continue
+        if not any(char.isalpha() for char in normalized):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        filtered.append(normalized)
+    if not filtered:
+        return None
+    return "*" + "*".join(filtered) + "*"
 
 
 def _has_id_evidence(value: str, query_norm: str) -> bool:
@@ -177,7 +314,86 @@ def _has_birth_date_evidence(value: str, query_norm: str) -> bool:
 
 
 def _query_mentions_date(query_norm: str) -> bool:
-    return bool(DATE_TOKEN_RE.search(query_norm) or DATE_HINT_RE.search(query_norm))
+    return bool(
+        DATE_TOKEN_RE.search(query_norm)
+        or DATE_HINT_RE.search(query_norm)
+        or YEAR_RANGE_RE.search(query_norm)
+        or YEAR_SINCE_RE.search(query_norm)
+        or YEAR_ONLY_RE.search(query_norm)
+    )
+
+
+def _subtract_years(value: date, years: int) -> date:
+    target_year = value.year - years
+    try:
+        return value.replace(year=target_year)
+    except ValueError:
+        return value.replace(year=target_year, month=2, day=28)
+
+
+def _birth_date_range_for_ages(
+    min_age: int, max_age: int, today: date
+) -> str | None:
+    if min_age < 0 or max_age < 0:
+        return None
+    if min_age > max_age:
+        min_age, max_age = max_age, min_age
+    if min_age > 130 or max_age > 130:
+        return None
+    earliest = _subtract_years(today, max_age + 1) + timedelta(days=1)
+    latest = _subtract_years(today, min_age)
+    if earliest > latest:
+        return None
+    return f"{earliest:%Y%m%d}-{latest:%Y%m%d}"
+
+
+def _extract_birth_date_from_query(query_norm: str, today: date | None = None) -> str | None:
+    today_value = today or date.today()
+    match = AGE_RANGE_CAPTURE_RE.search(query_norm)
+    if match:
+        return _birth_date_range_for_ages(int(match.group(1)), int(match.group(2)), today_value)
+    match = AGE_CAPTURE_RE.search(query_norm)
+    if match:
+        return _birth_date_range_for_ages(int(match.group(1)), int(match.group(1)), today_value)
+    return None
+
+
+def _format_year_range(start_year: int, end_year: int) -> str:
+    if start_year > end_year:
+        start_year, end_year = end_year, start_year
+    return f"{start_year:04d}0101-{end_year:04d}1231"
+
+
+def _extract_study_date_from_query(query_norm: str, today: date | None = None) -> str | None:
+    today_value = today or date.today()
+    match = re.search(r"\b(\d{8})\s*-\s*(\d{8})\b", query_norm)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    tokens = re.findall(r"\b\d{8}\b|\b\d{4}[-/]\d{2}[-/]\d{2}\b", query_norm)
+    if len(tokens) >= 2:
+        start = _normalize_study_date(tokens[0])
+        end = _normalize_study_date(tokens[1])
+        if start and end:
+            return f"{start}-{end}"
+    if len(tokens) == 1:
+        normalized = _normalize_study_date(tokens[0])
+        if normalized:
+            return normalized
+    match = YEAR_RANGE_RE.search(query_norm)
+    if match:
+        return _format_year_range(int(match.group(1)), int(match.group(2)))
+    match = YEAR_SINCE_RE.search(query_norm)
+    if match:
+        return f"{int(match.group(1)):04d}0101-{today_value:%Y%m%d}"
+    match = YEAR_ONLY_RE.search(query_norm)
+    if match:
+        year = int(match.group(1))
+        return f"{year:04d}0101-{year:04d}1231"
+    return None
+
+
+def _has_series_evidence(query_norm: str) -> bool:
+    return bool(SERIES_EVIDENCE_RE.search(query_norm))
 
 
 def _normalize_study_date(value: str | None) -> str | None:
@@ -255,6 +471,19 @@ def _filter_modalities_by_query(value: str, query_norm: str) -> str | None:
 def _strip_modality_tokens(description: str, modalities: list[str]) -> str | None:
     if not description:
         return description
+    stripped = description.strip()
+    prefix = ""
+    for char in stripped:
+        if char in "*?":
+            prefix += char
+        else:
+            break
+    suffix = ""
+    for char in reversed(stripped):
+        if char in "*?":
+            suffix = char + suffix
+        else:
+            break
     remove_tokens: set[str] = set()
     for modality in modalities:
         for token in MODALITY_EVIDENCE.get(modality, []):
@@ -276,7 +505,12 @@ def _strip_modality_tokens(description: str, modalities: list[str]) -> str | Non
 
     if not filtered:
         return None
-    return " ".join(filtered)
+    cleaned = " ".join(filtered)
+    if prefix and cleaned and cleaned[0] not in "*?":
+        cleaned = f"{prefix}{cleaned}"
+    if suffix and cleaned and cleaned[-1] not in "*?":
+        cleaned = f"{cleaned}{suffix}"
+    return cleaned
 
 
 def apply_evidence_guardrails(
@@ -292,6 +526,9 @@ def apply_evidence_guardrails(
     if isinstance(series, dict):
         if _is_wildcard_only(series.get("series_description")):
             series["series_description"] = None
+        if not _has_series_evidence(query_norm):
+            data["series"] = None
+            series = None
 
     if study.get("patient_id") and not _has_id_evidence(study["patient_id"], query_norm):
         study["patient_id"] = None
@@ -321,6 +558,12 @@ def apply_evidence_guardrails(
         study["patient_birth_date"], query_norm
     ):
         study["patient_birth_date"] = None
+    extracted_birth_date = _extract_birth_date_from_query(query_norm)
+    if extracted_birth_date:
+        study["patient_birth_date"] = extracted_birth_date
+    extracted_study_date = _extract_study_date_from_query(query_norm)
+    if extracted_study_date:
+        study["study_date"] = extracted_study_date
     if not study.get("modality_in_study"):
         fallback_modalities = _extract_modalities_from_query(query_norm)
         if fallback_modalities:
@@ -352,6 +595,10 @@ def apply_evidence_guardrails(
         body_part = _extract_body_part_from_query(query_norm)
         if body_part:
             study["study_description"] = body_part
+    if not study.get("study_description"):
+        fallback = _extract_fallback_description(query_norm, study)
+        if fallback:
+            study["study_description"] = fallback
 
     has_study_filters = any(
         study.get(field)
@@ -424,14 +671,54 @@ def extract_json(text: str) -> dict:
                 try:
                     return json.loads(candidate)
                 except json.JSONDecodeError as exc:
-                    raise ValueError("Invalid JSON object") from exc
+                    if _has_missing_values(candidate):
+                        raise ValueError("Invalid JSON object") from exc
+                    try:
+                        data = yaml.safe_load(candidate)
+                    except yaml.YAMLError as yaml_exc:
+                        raise ValueError("Invalid JSON object") from yaml_exc
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid JSON object") from exc
+                    return data
 
     raise ValueError("No JSON object found")
 
 
+def _has_missing_values(candidate: str) -> bool:
+    in_double = False
+    in_single = False
+    escape = False
+    for idx, char in enumerate(candidate):
+        if in_double:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_double = False
+            continue
+        if in_single:
+            if char == "'":
+                in_single = False
+            continue
+        if char == '"':
+            in_double = True
+            continue
+        if char == "'":
+            in_single = True
+            continue
+        if char == ":":
+            j = idx + 1
+            while j < len(candidate) and candidate[j].isspace():
+                j += 1
+            if j < len(candidate) and candidate[j] in ",}]":
+                return True
+    return False
+
+
 def parse_nl_to_criteria(
     query: str,
-    llm: LLMConfig | object,
+    llm: LLMConfig | LLMClient | object,
     strict_evidence: bool = False,
     debug: bool = False,
 ) -> SearchCriteria:
@@ -439,16 +726,38 @@ def parse_nl_to_criteria(
     if hasattr(llm, "chat"):
         client = llm
     elif isinstance(llm, LLMConfig):
-        client = OllamaClient.from_config(llm)
+        client = create_llm_client(llm)
     else:
         raise TypeError("llm must be an LLMConfig or client with chat()")
 
     system_prompt = SYSTEM_PROMPT
     query_norm = _normalize_text(query)
     if AGE_RANGE_RE.search(query_norm) or AGE_RE.search(query_norm):
-        system_prompt = f"{SYSTEM_PROMPT}\nHoje: {date.today():%Y-%m-%d}"
-    raw = client.chat(system_prompt, query)
-    data = extract_json(raw)
+        system_prompt = f"{SYSTEM_PROMPT}\nToday: {date.today():%Y-%m-%d}"
+    # Use json_mode for clients that support it
+    json_schema = None
+    response_format = getattr(client, "response_format", None)
+    if response_format in {"json_schema", "auto"}:
+        json_schema = RESPONSE_SCHEMA
+    raw = client.chat(system_prompt, query, json_mode=True, json_schema=json_schema)
+    try:
+        data = extract_json(raw)
+    except ValueError as exc:
+        if debug:
+            log.info(
+                "LLM raw response",
+                extra={"extra_data": {"response": raw}},
+            )
+        raise ValueError(
+            "LLM response did not contain a JSON object. "
+            "Verify stop tokens/max_tokens or rerun with --llm-debug."
+        ) from exc
+    if not isinstance(data.get("study"), dict):
+        data["study"] = {}
+    if "series" not in data:
+        data["series"] = None
+    elif data["series"] is not None and not isinstance(data["series"], dict):
+        data["series"] = None
     if debug:
         log.info("LLM JSON extracted", extra={"extra_data": {"llm_json": data}})
     if strict_evidence:

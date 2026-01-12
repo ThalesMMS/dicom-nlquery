@@ -7,7 +7,7 @@ Usage:
   python scripts/manual_search_cli.py --config config.yaml "query"
 
 Prerequisites:
-  - Ollama running with the model configured in config.yaml
+  - Ollama running with the model configured via llm_path (configs/llm-test.yaml)
   - dicom-mcp available (uv pip install -e ../dicom-mcp)
 """
 

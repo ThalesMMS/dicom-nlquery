@@ -9,8 +9,8 @@ the `dicom-mcp` server (stdio transport), so the LLM only builds query params an
 ## Prerequisites
 
 - Python 3.12+
-- uv
-- Ollama running locally (for parsing)
+- [uv](https://docs.astral.sh/uv/) (package manager)
+- OpenAI-compatible LLM server (vLLM, OpenAI, Ollama, or LM Studio)
 - Docker (only for integration tests / Orthanc demo)
 
 ## One-time setup (single venv for both)
@@ -30,15 +30,15 @@ uv pip install -e ../dicom-mcp
 ## Run with Orthanc (local demo)
 
 ```bash
-# start Orthanc
+# Start Orthanc
 cd dicom-nlquery
 docker compose -f tests/docker-compose.yml up -d
 
-# dry-run (no PACS query)
-dicom-nlquery dry-run "women ages 20 to 40 with cranial MR"
+# Dry-run (no PACS query)
+uv run dicom-nlquery dry-run "women ages 20 to 40 with cranial MR"
 
-# execute (C-FIND)
-dicom-nlquery execute --date-range 20190101-20210101 \
+# Execute (C-FIND)
+uv run dicom-nlquery execute --date-range 20190101-20210101 \
   "women ages 20 to 40 with cranial MR"
 ```
 
@@ -56,6 +56,10 @@ the Orthanc node.
 valid dicom-mcp YAML.
 
 ## Agent protocol (stateful)
+
+Note: `dicom-nlquery/src/dicom_nlquery/agent.py` and
+`dicom-nlquery/scripts/run_agent.py` are marked for potential removal if the
+workflow no longer needs the agent loop.
 
 The DICOM agent follows a deterministic, stateful pipeline:
 
@@ -86,24 +90,72 @@ dicom-mcp to C-MOVE the first matched study to a destination node.
 ```bash
 cd dicom-nlquery
 
-python scripts/nlquery_move_study.py \
+uv run python scripts/nlquery_move_study.py \
   "women ages 20 to 40 with cranial MR" \
-  --mcp-config ../dicom-mcp/configuration.yaml \
+  --mcp-config ../configs/dicom.yaml \
   --source-node orthanc --destination-node radiant \
   --date-range 20100101-20991231
 ```
 
 ## Configuration
 
-Use `config.yaml` for real PACS or `config-test.yaml` for Orthanc. Example:
+Use `config.yaml` for real PACS or `config-test.yaml` for Orthanc.
+
+### LLM Configuration
+
+The system supports multiple LLM backends via a unified client interface:
+
+| Provider | API Format | Config Value |
+|----------|------------|--------------|
+| vLLM | OpenAI-compatible | `openai` |
+| OpenAI | OpenAI native | `openai` |
+| Ollama | Ollama native | `ollama` |
+| LM Studio | Ollama-compatible | `lmstudio` |
+
+LLM settings live in `configs/llm.yaml` (production) or `configs/llm-test.yaml`
+(local/test). Reference the file from `dicom-nlquery/config.yaml` via `llm_path`.
+
+**vLLM (Production, configs/llm.yaml):**
 
 ```yaml
-llm:
-  provider: "ollama"
-  base_url: "http://127.0.0.1:11434"
-  model: "llama3.2:latest"
-  temperature: 0
-  timeout: 60
+provider: "openai"
+base_url: "http://100.100.101.1:8000"
+model: "default"
+temperature: 0.1
+timeout: 60
+max_tokens: 1024
+max_completion_tokens: 1024
+response_format: "json_schema"
+stop:
+  - "<|eot_id|>"
+# api_key: "your-api-key"  # Optional for vLLM
+```
+
+Adjust `stop` tokens to match the deployed model if it uses a different end-of-turn marker.
+If the backend rejects `json_schema`, set `response_format` to `json_object`.
+
+**Ollama (Local Development, configs/llm-test.yaml):**
+
+```yaml
+provider: "ollama"
+base_url: "http://127.0.0.1:11434"
+model: "llama3.2:latest"
+temperature: 0.1
+timeout: 60
+```
+
+### Full Configuration Example
+
+```yaml
+llm_path: "../configs/llm.yaml"
+
+mcp:
+  command: "dicom-mcp"
+  config_path: "../configs/dicom.yaml"
+  tool_timeout_seconds: 30
+  retry:
+    max_attempts: 3
+    backoff_seconds: [0.5, 1.0, 2.0]
 
 guardrails:
   study_date_range_default_days: 180
@@ -134,10 +186,6 @@ ranking:
   enabled: true
   text_match_weight: 0.7
   recency_weight: 0.3
-
-mcp:
-  command: "dicom-mcp"
-  config_path: "../dicom-mcp/configuration.yaml"
 
 resolver:
   enabled: true
@@ -205,18 +253,27 @@ full stats.
 
 ## Usage
 
+All commands should be run with `uv run` to ensure the correct environment.
+
 ```bash
-# dry-run
-dicom-nlquery dry-run "women age 30 with cranial MR"
+cd dicom-nlquery
 
-# execute with JSON output
-dicom-nlquery execute --json "cranial exams"
+# Dry-run (parse only, no PACS query)
+uv run dicom-nlquery dry-run "women age 30 with cranial MR"
 
-# custom date range
-dicom-nlquery execute --date-range 20240101-20241231 "exams from 2024"
+# Dry-run output includes node_matches when MCP is configured
 
-# override node
-dicom-nlquery execute --node orthanc "all exams"
+# Execute with JSON output
+uv run dicom-nlquery execute --json "cranial exams"
+
+# Custom date range
+uv run dicom-nlquery execute --date-range 20240101-20241231 "exams from 2024"
+
+# Override node
+uv run dicom-nlquery execute --node orthanc "all exams"
+
+# Verbose mode with LLM debug output
+uv run dicom-nlquery -v --llm-debug execute "chest CT"
 ```
 
 `--node` uses dicom-mcp to switch the active node before the query.
@@ -237,18 +294,26 @@ dicom-nlquery execute --node orthanc "all exams"
 
 ## Testing
 
-```bash
-# unit tests
-cd dicom-nlquery
-pytest tests/unit/ -v
+All tests should be run with `uv run`.
 
-# integration tests (Orthanc)
+```bash
+cd dicom-nlquery
+
+# Unit tests
+uv run pytest tests/unit/ -v
+
+# Integration tests (requires Orthanc)
 docker compose -f tests/docker-compose.yml up -d
-pytest tests/integration/ -v -m integration
+uv run pytest tests/integration/ -v -m integration
 docker compose -f tests/docker-compose.yml down
 
-# full suite
-pytest tests/ -v
+# Full suite
+uv run pytest tests/ -v
+
+# Run specific test files
+uv run pytest tests/unit/test_node_registry.py -v
+uv run pytest tests/unit/test_resolver.py -v
+uv run pytest tests/unit/test_confirmation.py -v
 ```
 
 ## PACS Lexicon & RAG
@@ -257,16 +322,17 @@ pytest tests/ -v
 a starter lexicon file for manual curation.
 
 ```bash
-# build or update the index (requires a configured MCP server)
 cd pacs-rag
-uv run --with-editable '.[dev,mcp]' -- pacs-rag ingest-mcp \
+
+# Build or update the index (requires a configured MCP server)
+uv run pacs-rag ingest-mcp \
   --mcp-command dicom-mcp \
-  --config-path ../dicom-mcp/configuration.yaml \
+  --config-path ../configs/dicom.yaml \
   --index data/pacs_terms.sqlite \
   --study-date 20240101-20241231
 
-# export a lexicon skeleton (review and add synonyms)
-uv run --with-editable '.[dev]' -- pacs-rag export-lexicon \
+# Export a lexicon skeleton (review and add synonyms)
+uv run pacs-rag export-lexicon \
   --index data/pacs_terms.sqlite \
   --output ../dicom-nlquery/configs/lexicon.generated.yaml \
   --min-count 2
@@ -288,8 +354,9 @@ The generated YAML includes:
 
 ## Troubleshooting
 
-- "LLM not available": ensure Ollama is running (`ollama serve`) and
-  `llama3.2:latest` is installed.
+- "LLM not available": ensure your LLM server is running and accessible.
+  - For vLLM: check that the server is running at the configured `base_url`
+  - For Ollama: ensure `ollama serve` is running and the model is installed
 - "DICOM association failed": check AE titles, host/port, firewall, and
   Orthanc `DicomModalities` entries.
 - "No results": expand the date range and validate criteria with
@@ -311,5 +378,5 @@ print(result.accession_numbers)
 ## Contributing
 
 - Keep changes small and add tests for new behavior.
-- Run `pytest tests/ -v` before submitting.
+- Run `uv run pytest tests/ -v` before submitting.
 - Keep PHI out of logs and fixtures.

@@ -15,16 +15,24 @@ def _write_config(tmp_path: Path, content: str) -> Path:
     return path
 
 
+def _write_llm_config(tmp_path: Path, content: str | None = None) -> Path:
+    text = content or """
+    provider: "ollama"
+    base_url: "http://127.0.0.1:11434"
+    model: "llama3.2:latest"
+    temperature: 0.1
+    timeout: 60
+    """
+    path = tmp_path / "llm.yaml"
+    path.write_text(textwrap.dedent(text).strip() + "\n", encoding="utf-8")
+    return path
+
+
 def test_load_valid_config(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         """
-        llm:
-          provider: "ollama"
-          base_url: "http://127.0.0.1:11434"
-          model: "llama3.2:latest"
-          temperature: 0
-          timeout: 60
+        llm_path: "llm.yaml"
 
         mcp:
           command: "dicom-mcp"
@@ -32,6 +40,7 @@ def test_load_valid_config(tmp_path: Path) -> None:
         """,
     )
 
+    _write_llm_config(tmp_path)
     (tmp_path / "dicom-mcp.yaml").write_text("nodes: {}", encoding="utf-8")
     config = load_config(config_path)
 
@@ -45,10 +54,7 @@ def test_load_mcp_retry_settings(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         """
-        llm:
-          provider: "ollama"
-          base_url: "http://127.0.0.1:11434"
-          model: "llama3.2:latest"
+        llm_path: "llm.yaml"
 
         mcp:
           command: "dicom-mcp"
@@ -61,6 +67,7 @@ def test_load_mcp_retry_settings(tmp_path: Path) -> None:
         """,
     )
 
+    _write_llm_config(tmp_path)
     (tmp_path / "dicom-mcp.yaml").write_text("nodes: {}", encoding="utf-8")
     config = load_config(config_path)
 
@@ -75,10 +82,7 @@ def test_load_search_pipeline_limits(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         """
-        llm:
-          provider: "ollama"
-          base_url: "http://127.0.0.1:11434"
-          model: "llama3.2:latest"
+        llm_path: "llm.yaml"
 
         search_pipeline:
           server_limit_studies: 123
@@ -86,6 +90,7 @@ def test_load_search_pipeline_limits(tmp_path: Path) -> None:
         """,
     )
 
+    _write_llm_config(tmp_path)
     config = load_config(config_path)
 
     assert config.search_pipeline.server_limit_studies == 123
@@ -109,10 +114,7 @@ def test_config_applies_guardrails_defaults(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         """
-        llm:
-          provider: "ollama"
-          base_url: "http://127.0.0.1:11434"
-          model: "llama3.2:latest"
+        llm_path: "llm.yaml"
 
         mcp:
           command: "dicom-mcp"
@@ -120,6 +122,7 @@ def test_config_applies_guardrails_defaults(tmp_path: Path) -> None:
         """,
     )
 
+    _write_llm_config(tmp_path)
     (tmp_path / "dicom-mcp.yaml").write_text("nodes: {}", encoding="utf-8")
     config = load_config(config_path)
 
@@ -132,10 +135,16 @@ def test_config_validates_llm_provider(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         """
-        llm:
-          provider: "invalid"
-          base_url: "http://127.0.0.1:11434"
-          model: "llama3.2:latest"
+        llm_path: "llm.yaml"
+        """,
+    )
+
+    _write_llm_config(
+        tmp_path,
+        """
+        provider: "invalid"
+        base_url: "http://127.0.0.1:11434"
+        model: "llama3.2:latest"
         """,
     )
 
@@ -147,10 +156,7 @@ def test_config_resolves_mcp_relative_paths(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         """
-        llm:
-          provider: "ollama"
-          base_url: "http://127.0.0.1:11434"
-          model: "llama3.2:latest"
+        llm_path: "llm.yaml"
 
         mcp:
           command: "dicom-mcp"
@@ -159,6 +165,7 @@ def test_config_resolves_mcp_relative_paths(tmp_path: Path) -> None:
         """,
     )
 
+    _write_llm_config(tmp_path)
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "mcp.yaml").write_text("nodes: {}", encoding="utf-8")
 
