@@ -68,7 +68,7 @@ def test_llm_client_timeout() -> None:
 
 def test_openai_client_parses_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == httpx.URL("http://vllm:8000/v1/chat/completions")
+        assert request.url == httpx.URL("http://vllm:8001/v1/chat/completions")
         payload = json.loads(request.content)
         assert payload["model"] == "default"
         assert "Authorization" in request.headers
@@ -82,7 +82,7 @@ def test_openai_client_parses_response() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -106,7 +106,7 @@ def test_openai_client_includes_stop_and_max_tokens() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
         max_tokens=256,
@@ -131,7 +131,7 @@ def test_openai_client_json_schema_mode() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
         response_format="json_schema",
@@ -166,7 +166,7 @@ def test_openai_client_json_schema_fallback_on_error() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
         response_format="json_schema",
@@ -198,7 +198,7 @@ def test_openai_client_json_mode() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -221,7 +221,7 @@ def test_openai_client_json_mode_content_dict() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -259,7 +259,7 @@ def test_openai_client_json_mode_tool_call_fallback() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -295,7 +295,7 @@ def test_openai_client_json_mode_tool_call_arguments_at_top_level() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -333,7 +333,7 @@ def test_openai_client_json_mode_choice_tool_call_fallback() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -363,7 +363,7 @@ def test_openai_client_json_mode_function_call_fallback() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -395,7 +395,7 @@ def test_openai_client_json_mode_reasoning_fallback() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -434,7 +434,7 @@ def test_openai_client_with_tools() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -456,7 +456,7 @@ def test_openai_client_connection_error() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -472,7 +472,7 @@ def test_openai_client_timeout() -> None:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport)
     llm = OpenAIClient(
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
         client=client,
     )
@@ -487,7 +487,7 @@ def test_openai_client_timeout() -> None:
 def test_create_llm_client_openai() -> None:
     config = LLMConfig(
         provider="openai",
-        base_url="http://vllm:8000",
+        base_url="http://vllm:8001",
         model="default",
     )
     client = create_llm_client(config)

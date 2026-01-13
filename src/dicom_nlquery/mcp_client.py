@@ -19,8 +19,8 @@ REQUIRED_MANIFEST_VERSION = "1.0"
 REQUIRED_SCHEMA_VERSION = "1.0"
 REQUIRED_TOOL_VERSIONS: dict[str, str] = {
     "list_dicom_nodes": "1.0",
-    "query_studies": "1.0",
-    "query_series": "1.0",
+    "query_studies": "2.0",
+    "query_series": "2.0",
     "move_study": "1.0",
 }
 
@@ -42,8 +42,8 @@ DEFAULT_RETRY_POLICY = McpRetryPolicy(
 
 
 class McpToolExecutionError(RuntimeError):
-    def __init__(self, tool: str, payload: Any) -> None:
-        super().__init__(f"MCP tool '{tool}' returned error")
+    def __init__(self, tool: str, payload: Any, message: str | None = None) -> None:
+        super().__init__(message or f"MCP tool '{tool}' returned error")
         self.tool = tool
         self.payload = payload
 
@@ -144,6 +144,26 @@ def _summarize_payload(payload: Any) -> dict[str, Any] | None:
     return {"type": type(payload).__name__}
 
 
+def _payload_error_message(payload: dict[str, Any]) -> str | None:
+    message = payload.get("message")
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = message or error.get("message") or error.get("type")
+    elif isinstance(error, str):
+        message = message or error
+    return message
+
+
+def _unwrap_query_results(payload: Any, tool: str) -> Any:
+    if isinstance(payload, dict):
+        if payload.get("success") is False:
+            message = _payload_error_message(payload)
+            raise McpToolExecutionError(tool, payload, message)
+        if "results" in payload:
+            return payload.get("results", [])
+    return payload
+
+
 def build_stdio_server_params(config: McpServerConfig) -> StdioServerParameters:
     args: list[str] = []
     if config.config_path:
@@ -240,7 +260,8 @@ class McpSession:
         result = await asyncio.wait_for(call, timeout=timeout_seconds)
         payload = _extract_tool_payload(result)
         if result.isError:
-            raise McpToolExecutionError(name, payload)
+            message = _payload_error_message(payload) if isinstance(payload, dict) else None
+            raise McpToolExecutionError(name, payload, message)
         return payload
 
     async def _ensure_manifest(self) -> None:
@@ -251,10 +272,12 @@ class McpSession:
             raise McpManifestError(f"MCP manifest validation failed: {exc}") from exc
 
     async def query_studies(self, **kwargs) -> Any:
-        return await self.call_tool("query_studies", kwargs)
+        payload = await self.call_tool("query_studies", kwargs)
+        return _unwrap_query_results(payload, "query_studies")
 
     async def query_series(self, **kwargs) -> Any:
-        return await self.call_tool("query_series", kwargs)
+        payload = await self.call_tool("query_series", kwargs)
+        return _unwrap_query_results(payload, "query_series")
 
     async def list_dicom_nodes(self) -> Any:
         return await self.call_tool("list_dicom_nodes")

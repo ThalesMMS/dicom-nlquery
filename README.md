@@ -13,6 +13,29 @@ the `dicom-mcp` server (stdio transport), so the LLM only builds query params an
 - OpenAI-compatible LLM server (vLLM, OpenAI, Ollama, or LM Studio)
 - Docker (only for integration tests / Orthanc demo)
 
+## Quick checklist
+
+1) Create the shared venv and install packages:
+
+```bash
+cd dicom-nlquery
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+uv pip install -e ../dicom-mcp
+```
+
+2) Make sure your LLM endpoint is running (vLLM/Ollama/LM Studio).
+
+3) Run the CLI:
+
+```bash
+uv run dicom-nlquery dry-run "cranial exams"
+uv run dicom-nlquery execute --date-range 20240101-20241231 "exams from 2024"
+```
+
+`dicom-nlquery` starts `dicom-mcp` on demand via stdio, so you usually do not
+need to run the server in a separate terminal.
+
 ## One-time setup (single venv for both)
 
 ```bash
@@ -119,7 +142,7 @@ LLM settings live in `configs/llm.yaml` (production) or `configs/llm-test.yaml`
 
 ```yaml
 provider: "openai"
-base_url: "http://100.100.101.1:8000"
+base_url: "http://100.100.101.1:8001"
 model: "default"
 temperature: 0.1
 timeout: 60
